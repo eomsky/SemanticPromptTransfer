@@ -1,0 +1,69 @@
+{
+  "version": "v0.19",
+  "default_representation_level": 0,
+  "cells_1_3": "FROZEN",
+  "retraining_performed": false,
+  "stx_engine_role": "reduced package example; full report is external controlled test data",
+  "artifacts": [
+    {
+      "name": "semantic_prompt_transfer-0.19.0-py3-none-any.whl",
+      "path": "v019_output/dist/semantic_prompt_transfer-0.19.0-py3-none-any.whl",
+      "bytes": 31367,
+      "sha256": "d306e8424e8440970db20791772cb82ec34d704a3700561eaa7b783ec4bd6c86"
+    },
+    {
+      "name": "semantic_prompt_transfer-0.19.0.tar.gz",
+      "path": "v019_output/dist/semantic_prompt_transfer-0.19.0.tar.gz",
+      "bytes": 28900,
+      "sha256": "57787b19ab44f8c881aec2dd804a4ee4e6f7dfca9fcbf0ae949fa3bd37c9c65a"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_SOURCE_BUNDLE.zip",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_SOURCE_BUNDLE.zip",
+      "bytes": 5287190,
+      "sha256": "fecc70884805500a5154cc5ffa3c56f646dc65242068b8c23ce85f71b49d8933"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_REQUIREMENTS.md",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_REQUIREMENTS.md",
+      "bytes": 13590,
+      "sha256": "cca367ceab3174cbabb1bd47cd069ad4474d63e6974746b21d153d9be5b58ce3"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_REQUIREMENTS.pdf",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_REQUIREMENTS.pdf",
+      "bytes": 149763,
+      "sha256": "1dc3504baabe85670e45b416be55222808b983be9e634aec436da8edec750d79"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_REQUIREMENTS.docx",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_REQUIREMENTS.docx",
+      "bytes": 24767,
+      "sha256": "48f4271e782f9706ad149296946d28d59652ce9caca09107e2f328d9a4b38714"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_VALIDATION.md",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_VALIDATION.md",
+      "bytes": 5397,
+      "sha256": "d6aa0346602b4e66d53ac712a5ba4c11597d6554d1cbd1647e861c6131670d7e"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_VALIDATION.json",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_VALIDATION.json",
+      "bytes": 4094,
+      "sha256": "aa383145385c3363327283f08ce324ce57983f940ede18b0830dbdb517809d69"
+    },
+    {
+      "name": "SemanticPromptTransfer_v0.19_STX_EXAMPLE_RESULTS.json",
+      "path": "v019_output/SemanticPromptTransfer_v0.19_STX_EXAMPLE_RESULTS.json",
+      "bytes": 34266,
+      "sha256": "f5c34fd3a4b62d1fa5a54e78718b79de1bb085b192072c4ac3c9f26d32bacdf1"
+    },
+    {
+      "name": "stx_engine_l0_example_index.npz",
+      "path": "v019_output/stx_engine_l0_example_index.npz",
+      "bytes": 9259,
+      "sha256": "08ca0dd5b0a18af3e086abd372ad11b7ebc851a4b8ad1061faa83389c80320bc"
+    }
+  ]
+}

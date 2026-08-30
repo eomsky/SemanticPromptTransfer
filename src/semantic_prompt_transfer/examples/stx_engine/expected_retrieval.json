@@ -1,0 +1,12 @@
+{
+  "source_version": "SemanticPromptTransfer v0.18 full STX benchmark",
+  "representation_level": 0,
+  "top_k": 5,
+  "expected_top1_physical_table": {
+    "Q01_LIQUIDITY": "P0207_T001",
+    "Q02_RELATED_PARTY": "P0198_T003",
+    "Q03_CONTINGENT_RISK": "P0126_T001",
+    "Q04_FINANCING_STRUCTURE": "P0216_T001",
+    "Q05_CASH_FLOW": "P0193_T003"
+  }
+}

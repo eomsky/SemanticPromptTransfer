@@ -1,0 +1,36 @@
+\usepackage{unicode-math}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{caption}
+\usepackage{hyperref}
+\defaultfontfeatures{Ligatures=TeX,Scale=MatchLowercase}
+\setmainfont[Path=./fonts/,BoldFont=NanumGothicBold.ttf]{NanumGothic.ttf}
+\setsansfont[Path=./fonts/,BoldFont=NanumGothicBold.ttf]{NanumGothic.ttf}
+\setmonofont[Path=./fonts/,Scale=0.88]{NanumGothic.ttf}
+\setmathfont[Scale=1.0]{Latin Modern Math}
+\XeTeXlinebreaklocale "ko"
+\XeTeXlinebreakskip=0pt plus 1pt
+\definecolor{SPTBlue}{HTML}{17365D}
+\hypersetup{colorlinks=true,linkcolor=SPTBlue,urlcolor=SPTBlue,pdfauthor={SemanticPromptTransfer},pdftitle={SemanticPromptTransfer v0.19 요구사항 정의서}}
+\setlist{nosep,leftmargin=1.8em}
+\captionsetup{font=small,labelfont=bf}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,LO]{SemanticPromptTransfer v0.19}
+\fancyhead[RE,RO]{패키지 요구사항 정의서}
+\cfoot{\thepage\ / \pageref{LastPage}}
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyhead[LE,LO]{SemanticPromptTransfer v0.19}%
+  \fancyhead[RE,RO]{패키지 요구사항 정의서}%
+  \cfoot{\thepage\ / \pageref{LastPage}}%
+}
+\setlength{\headheight}{15pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}

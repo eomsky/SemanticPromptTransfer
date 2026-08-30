@@ -1,0 +1,27 @@
+[
+  {
+    "chunk_id": "STX_SAMPLE_LIQUIDITY",
+    "embedding_text": "단위: 천원. 현금및현금성자산 122,652,273. 금융기관 차입금 312,315,663. 순채무 189,663,390.",
+    "metadata": {"content_type": "table", "topic": "liquidity", "tenant_id": "example", "case_id": "stx-2025", "document_id": "stx-business-report"}
+  },
+  {
+    "chunk_id": "STX_SAMPLE_RELATED_PARTY",
+    "embedding_text": "단위: 천원. 특수관계자 채권·채무 예제. 회사별 매출채권, 기타채권, 채무액과 합계를 포함한다.",
+    "metadata": {"content_type": "table", "topic": "related_party", "tenant_id": "example", "case_id": "stx-2025", "document_id": "stx-business-report"}
+  },
+  {
+    "chunk_id": "STX_SAMPLE_LITIGATION",
+    "embedding_text": "법적소송우발부채 예제. 상대방, 관할법원, 청구 내용, 소송금액과 진행상황을 포함한다.",
+    "metadata": {"content_type": "table", "topic": "litigation", "tenant_id": "example", "case_id": "stx-2025", "document_id": "stx-business-report"}
+  },
+  {
+    "chunk_id": "STX_SAMPLE_SUPPLIER_FINANCE",
+    "embedding_text": "단위: 천원. 공급자금융약정 금융부채 187,547,662. 매입채무 29,431,999. 단기차입금 158,115,663.",
+    "metadata": {"content_type": "table", "topic": "supplier_finance", "tenant_id": "example", "case_id": "stx-2025", "document_id": "stx-business-report"}
+  },
+  {
+    "chunk_id": "STX_SAMPLE_CASH_FLOW",
+    "embedding_text": "단위: 천원. 당기순이익, 비현금 조정과 영업활동으로 인한 자산·부채 변동을 연결하는 현금흐름 조정표 예제.",
+    "metadata": {"content_type": "table", "topic": "cash_flow", "tenant_id": "example", "case_id": "stx-2025", "document_id": "stx-business-report"}
+  }
+]

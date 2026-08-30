@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semantic-prompt-transfer"
+version = "0.19.0"
+description = "RAG-ready chunking, CPU embeddings, hybrid retrieval, and evidence prompt packaging"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+authors = [{name = "SemanticPromptTransfer"}]
+dependencies = [
+  "numpy>=1.26,<3.0",
+  "onnxruntime>=1.22,<2.0",
+  "tokenizers>=0.22,<1.0",
+]
+
+[project.scripts]
+spt-rag = "semantic_prompt_transfer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+semantic_prompt_transfer = [
+  "py.typed",
+  "examples/stx_engine/*.json",
+  "examples/stx_engine/*.md"
+]
