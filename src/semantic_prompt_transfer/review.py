@@ -71,6 +71,7 @@ class EvidenceAssembler:
                         "bbox": metadata.get("bbox"),
                         "page_size": metadata.get("page_size"),
                         "source_location": metadata.get("source_location"),
+                        "source_spans": metadata.get("source_spans") or [],
                     },
                 )
             )
@@ -102,8 +103,15 @@ class ReviewPromptPackage:
 
 
 class ReviewPromptBuilder:
-    def __init__(self, max_context_chars: int = 24000) -> None:
+    def __init__(
+        self,
+        max_context_chars: int = 18000,
+        tier_char_budgets: dict[int, int] | None = None,
+    ) -> None:
         self.max_context_chars = int(max_context_chars)
+        self.tier_char_budgets = dict(tier_char_budgets or {1: 8000, 2: 4000, 3: 6000})
+        if sum(self.tier_char_budgets.values()) > self.max_context_chars:
+            raise ValueError("tier evidence budgets exceed the prompt context budget")
 
     def build(
         self,
@@ -114,9 +122,12 @@ class ReviewPromptBuilder:
         few_shots: list[FewShotExample],
     ) -> ReviewPromptPackage:
         system = (
-            "현재 심사건의 근거만 사실로 사용한다. 근거 우선순위는 "
+            "현재 심사건의 근거만 사실로 사용한다. 사실 충돌 시 우선순위는 "
             "TIER_1 신용조사서 항목자료, TIER_2 신용조사서 공통자료, "
-            "TIER_3 기타 첨부파일 순서다. FEW SHOT은 문체와 분석 구조만 참고하며 "
+            "TIER_3 기타 첨부파일 순서다. 그러나 TIER_3는 신용조사서를 보완하고 "
+            "사업·시장·주석 정보를 확인하는 독립 근거이므로 관련 자료가 있으면 반드시 함께 검토한다. "
+            "신용조사서가 없으면 TIER_3 첨부자료만으로 작성하고 그 한계를 명시한다. "
+            "FEW SHOT은 문체와 분석 구조만 참고하며 "
             "그 안의 수치, 회사명, 기간 또는 사실을 현재 심사건에 사용하지 않는다. "
             "수치·단위·기간을 변형하지 않고 핵심 주장 문장 끝마다 근거를 "
             "[evidence_id] 형식으로 표시한다. 제공되지 않은 evidence_id는 만들지 않는다. "
@@ -131,23 +142,29 @@ class ReviewPromptBuilder:
                 "주의: 이 예시의 사실과 수치는 현재 심사건 근거가 아니다."
             )
 
-        evidence_blocks = []
+        evidence_blocks: list[str] = []
         used = 0
         kept_evidence: list[EvidenceRecord] = []
-        for row in evidence:
-            block = (
-                f"[TIER_{int(row.source_tier)} EVIDENCE]\n"
-                f"evidence_id={row.evidence_id}\n"
-                f"document_id={row.document_id}\n"
-                f"source_filename={row.source_filename}\n"
-                f"page={row.page}\n"
-                f"content={row.content}"
-            )
-            if evidence_blocks and used + len(block) > self.max_context_chars:
-                break
-            used += len(block)
-            evidence_blocks.append(block)
-            kept_evidence.append(row)
+        tier_usage = {1: 0, 2: 0, 3: 0}
+        for tier in (1, 2, 3):
+            budget = int(self.tier_char_budgets.get(tier, 0))
+            for row in (value for value in evidence if int(value.source_tier) == tier):
+                block = (
+                    f"[TIER_{int(row.source_tier)} EVIDENCE]\n"
+                    f"evidence_id={row.evidence_id}\n"
+                    f"document_id={row.document_id}\n"
+                    f"source_filename={row.source_filename}\n"
+                    f"page={row.page}\n"
+                    f"content={row.content}"
+                )
+                if tier_usage[tier] + len(block) > budget:
+                    continue
+                if used + len(block) > self.max_context_chars:
+                    continue
+                tier_usage[tier] += len(block)
+                used += len(block)
+                evidence_blocks.append(block)
+                kept_evidence.append(row)
 
         user = (
             f"심사건: tenant={case.tenant_id}, case={case.case_id}\n"
@@ -160,6 +177,8 @@ class ReviewPromptBuilder:
             + "\n\n[CURRENT_CASE_EVIDENCE]\n"
             + ("\n\n".join(evidence_blocks) if evidence_blocks else "현재 근거 없음")
             + "\n\n[작성요청]\n현황, 주요 원인, 위험·완화요인 및 향후전망을 근거 중심으로 작성하라. "
+            "TIER_3 근거가 제공된 경우 최소 한 문장에는 첨부자료 근거를 인용하고, "
+            "신용조사서와의 관계를 확인·보완·상이 중 하나로 설명하라. "
             "각 핵심 문장 끝에는 반드시 [CR_…] 또는 [ATT_…] 근거를 붙이고 최종 심사의견만 출력하라."
         )
         return ReviewPromptPackage(
@@ -188,5 +207,12 @@ class ReviewPromptBuilder:
                 "evidence_priority": [1, 2, 3],
                 "few_shot_is_evidence": False,
                 "context_characters": used,
+                "evidence_characters_by_tier": tier_usage,
+                "credit_report_available": any(
+                    int(row.source_tier) in (1, 2) for row in kept_evidence
+                ),
+                "attachment_evidence_available": any(
+                    int(row.source_tier) == 3 for row in kept_evidence
+                ),
             },
         )

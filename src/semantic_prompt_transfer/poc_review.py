@@ -27,8 +27,10 @@ class PocCreditFactRepository:
             for row in self.runtime.registry.list_documents(tenant_id, case_id)
             if row.document_kind is DocumentKind.CREDIT_REPORT and row.status is FileStatus.READY
         ]
-        if len(candidates) != 1:
-            raise ValueError("exactly one ready credit report is required")
+        if not candidates:
+            return []
+        if len(candidates) > 1:
+            raise ValueError("at most one ready credit report is allowed")
         document = candidates[0]
         if not document.derived_uri:
             raise RuntimeError("credit report derived path is missing")
@@ -91,8 +93,12 @@ class EphemeralReviewJobService:
         if not documents:
             raise ValueError("uploaded documents are required")
         credit_reports = [row for row in documents if row.document_kind is DocumentKind.CREDIT_REPORT]
-        if len(credit_reports) != 1:
-            raise ValueError("exactly one uploaded credit report is required")
+        if len(credit_reports) > 1:
+            raise ValueError("at most one uploaded credit report is allowed")
+        if not credit_reports and not any(
+            row.document_kind is DocumentKind.ATTACHMENT for row in documents
+        ):
+            raise ValueError("a credit report or at least one attachment is required")
         blocked = [
             row.filename
             for row in documents

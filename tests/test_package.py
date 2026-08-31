@@ -561,9 +561,8 @@ class OperationalPackageTests(unittest.TestCase):
         )
         content = path.read_text(encoding="utf-8")
         for label in (
-            "회원가입",
-            "부서명",
-            "사번",
+            "로그인 없는 시간 제한형 Colab POC",
+            "sptAnonymousClientV1",
             "신용조사서",
             "양식 다운로드",
             "기타 첨부자료",
@@ -574,6 +573,9 @@ class OperationalPackageTests(unittest.TestCase):
             "/api/v1/templates/credit-report.xlsx",
         ):
             self.assertIn(label, content)
+        self.assertNotIn("회원가입", content)
+        self.assertNotIn("로그아웃", content)
+        self.assertNotIn("X-POC-Token", content)
         self.assertNotIn("업로드 자료현황", content)
 
     def test_five_item_orchestration_generates_docx_and_progress(self):

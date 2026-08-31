@@ -14,7 +14,7 @@ from .domain import (
     ReviewSectionDraft,
     SourceTier,
 )
-from .encoding import E5OnnxEncoder, EncoderBackend, EncoderRegistry
+from .encoding import E5GpuEncoder, E5OnnxEncoder, EncoderBackend, EncoderRegistry
 from .fewshot import FewShotRegistry, FewShotSelector
 from .indexing import RAGIndex
 from .application import OperationalApplicationService
@@ -82,6 +82,7 @@ __all__ = [
     "EphemeralColabRuntime",
     "EphemeralReviewJobService",
     "E5OnnxEncoder",
+    "E5GpuEncoder",
     "EncoderBackend",
     "EncoderRegistry",
     "EvidenceAssembler",

@@ -1,10 +1,10 @@
-# semantic-prompt-transfer 0.24.0
+# semantic-prompt-transfer 0.25.0
 
-SemanticPromptTransfer v0.24 is a time-boxed Colab POC implementation for the
+SemanticPromptTransfer v0.25 is a time-boxed Colab POC implementation for the
 credit-review workflow. The browser remains a thin HTML client. Uploads,
-extracted facts, L0 vectors, user registrations, progress, and generated Word
-files live only in the Colab runtime and are removed when that runtime closes.
-Google Drive is not mounted by the application.
+extracted facts, L0 vectors, progress, and generated Word files live only in
+the Colab runtime and are removed when that runtime closes. Google Drive is
+mounted only by the launcher to stage approved runtime assets.
 
 For conversation-to-conversation continuity, current decisions, verified Drive
 locations, version history, and remaining work are consolidated in
@@ -12,22 +12,20 @@ locations, version history, and remaining work are consolidated in
 
 ## POC flow
 
-1. A user signs up with department, name, and employee number.
-2. For this limited POC, both login ID and initial password equal the employee
-   number. Password material is hashed in the temporary SQLite registry.
-3. The user downloads the credit-report Excel form, fills it, and uploads one
-   workbook.
-4. The user uploads multiple PDF, DOCX, XLSX, TXT, or Markdown attachments.
+1. The ngrok URL opens the upload screen directly without application login or
+   ngrok Basic Auth. A random browser-local scope separates concurrent users.
+2. The user may download the credit-report Excel form, fill it, and upload one
+   workbook. The credit report is optional when attachments are available.
+3. The user uploads multiple PDF, DOCX, XLSX, TXT, or Markdown attachments.
    Upload only stores each file; parsing and embedding start when generation is requested.
-5. Filenames appear inline. The `×` button deletes the server copy, derived
+4. Filenames appear inline. The `×` button deletes the server copy, derived
    files, and all vectors for that document after a zero-count verification.
-6. One Gemma generation model runs A→B→C→D→E sequentially. Tokens and the
-   current stage appear live in the read-only output panel.
-7. Clicking a cited claim opens a highlighted source capture for the exact
+5. One Gemma 4 MoE vLLM server runs A→B→C→D→E sequentially per job while
+   continuously batching up to four concurrent requests. Tokens and the current
+   stage appear live in the read-only output panel.
+6. Clicking a cited claim or its source-type button opens a large, zoomable,
+   highlighted source capture for the exact
    PDF block or Excel cell range. The completed opinion is downloaded as DOCX.
-
-The employee-number password rule is intentionally limited to a scheduled POC.
-It is not an enterprise authentication design.
 
 ## Source priority and few shots
 
@@ -36,6 +34,11 @@ Evidence is assembled separately for each review item in this fixed order:
 1. `TIER_1`: item-specific cells from the credit-report workbook
 2. `TIER_2`: common cells from the same workbook
 3. `TIER_3`: retrieved L0 evidence from attachments
+
+Each tier has a separate prompt budget, preventing a large credit workbook from
+crowding business-report evidence out of the context. If no credit report is
+uploaded, retrieval and generation proceed from `TIER_3` alone and the output
+states that limitation.
 
 Three approved few-shot cases are expanded into A–E examples and applied to all
 loan and industry types. They control structure and tone only; they are never
@@ -52,12 +55,13 @@ that a production Vector DB adapter must preserve.
 ## Colab start
 
 The operating notebook is
-`notebooks/SemanticPromptTransfer_v0.24_COLAB_LAUNCHER.ipynb`. It provides three
-editable few-shot cells, mounts the owner's Drive, verifies the approved wheel
-and compressed E5 asset, loads Gemma 4 31B in 4-bit mode, serves the packaged
-HTML and API on one port, and creates an ngrok URL protected by Basic Auth.
-The ngrok endpoint is reserved before the large model download, so a stale
-endpoint conflict fails fast.
+`notebooks/SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb`. It provides three
+pre-populated editable few-shot cells, mounts the owner's Drive, verifies the
+approved wheel, starts `google/gemma-4-26B-A4B-it` with vLLM on one A100 80 GB,
+loads a batched GPU E5 encoder, serves the packaged HTML and API on one port,
+and creates an ngrok URL without a second password prompt. The ngrok endpoint
+is reserved before the large model download, so a stale endpoint conflict fails
+fast. Colab Secrets require `NGROK_AUTHTOKEN` and `HF_TOKEN` only.
 
 The manual server path remains available below.
 
@@ -82,10 +86,9 @@ export SPT_LLM_MODEL=your-model-name
 export SPT_LLM_API_KEY=optional-secret
 ```
 
-The remote adapter follows an OpenAI-compatible `chat/completions` contract. If
-it is absent or fails grounding checks, the CPU-fast evidence template generator
-creates a conservative draft. Replacing the LLM does not change retrieval,
-validation, progress, or DOCX rendering.
+The remote adapter follows an OpenAI-compatible streaming `chat/completions`
+contract. Replacing the LLM does not change retrieval, validation, progress, or
+DOCX rendering.
 
 ## Downloadable Excel form
 
@@ -115,11 +118,13 @@ GET    /api/v1/review-jobs/{job_id}/evidence/{evidence_id}/capture.png
 GET    /api/v1/review-jobs/{job_id}/opinion.docx
 ```
 
-Every route except health, signup, and login requires `X-POC-Token`.
+The v0.25 notebook runs the API in anonymous POC mode. The packaged server still
+retains the optional identity routes for non-anonymous deployments, but the
+notebook HTML neither calls them nor sends `X-POC-Token`.
 
 ## Operational boundary
 
-v0.24 is suitable for a scheduled single-Colab POC. It is not yet a production
+v0.25 is suitable for a scheduled single-Colab POC. It is not yet a production
 bank deployment. Production still requires enterprise SSO/RBAC, password policy,
 malware scanning, encrypted persistent object storage, a managed Vector DB,
 distributed jobs, audit retention, runtime recovery, official Excel and Word

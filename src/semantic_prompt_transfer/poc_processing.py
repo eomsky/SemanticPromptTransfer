@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import threading
+from collections import OrderedDict, Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +29,7 @@ class ExtractedBlock:
     location: str | None = None
     bbox: tuple[float, float, float, float] | None = None
     page_size: tuple[float, float] | None = None
+    source_spans: tuple[dict[str, Any], ...] = ()
 
 
 class PocDocumentExtractor:
@@ -144,8 +147,9 @@ class PocUploadProcessor:
         *,
         credit_template: CreditReportTemplate | None = None,
         extractor: PocDocumentExtractor | None = None,
-        max_chars: int = 1800,
-        overlap_chars: int = 180,
+        max_chars: int = 1000,
+        overlap_chars: int = 100,
+        embedding_cache_size: int = 8,
     ) -> None:
         if max_chars < 256 or not 0 <= overlap_chars < max_chars:
             raise ValueError("invalid POC chunk size or overlap")
@@ -156,6 +160,11 @@ class PocUploadProcessor:
         self.extractor = extractor or PocDocumentExtractor()
         self.max_chars = int(max_chars)
         self.overlap_chars = int(overlap_chars)
+        self.embedding_cache_size = max(0, int(embedding_cache_size))
+        self._embedding_cache: OrderedDict[
+            tuple[str, str, str, str], tuple[tuple[str, ...], np.ndarray]
+        ] = OrderedDict()
+        self._cache_lock = threading.RLock()
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
@@ -189,6 +198,159 @@ class PocUploadProcessor:
             start = next_start
         return chunks
 
+    @staticmethod
+    def _source_span(block: ExtractedBlock) -> dict[str, Any]:
+        return {
+            "text": block.text,
+            "page": block.page,
+            "location": block.location,
+            "bbox": list(block.bbox) if block.bbox else None,
+            "page_size": list(block.page_size) if block.page_size else None,
+        }
+
+    @staticmethod
+    def _is_margin_block(block: ExtractedBlock) -> bool:
+        if not block.bbox or not block.page_size:
+            return False
+        _, y0, _, y1 = block.bbox
+        height = max(float(block.page_size[1]), 1.0)
+        return y1 <= height * 0.08 or y0 >= height * 0.92
+
+    def _filter_repeated_margins(self, blocks: list[ExtractedBlock]) -> list[ExtractedBlock]:
+        counts = Counter(
+            " ".join(block.text.lower().split())
+            for block in blocks
+            if block.page and self._is_margin_block(block) and len(block.text.strip()) <= 160
+        )
+        repeated = {text for text, count in counts.items() if text and count >= 3}
+        if not repeated:
+            return blocks
+        return [
+            block
+            for block in blocks
+            if not (
+                self._is_margin_block(block)
+                and " ".join(block.text.lower().split()) in repeated
+            )
+        ]
+
+    def _coalesce_pdf_blocks(self, blocks: list[ExtractedBlock]) -> list[ExtractedBlock]:
+        """Merge only nearby blocks on one page and retain every source span."""
+        prepared = self._filter_repeated_margins(blocks)
+        merged: list[ExtractedBlock] = []
+        current: list[ExtractedBlock] = []
+
+        def flush() -> None:
+            if not current:
+                return
+            if len(current) == 1:
+                block = current[0]
+                spans = block.source_spans or (self._source_span(block),)
+                merged.append(
+                    ExtractedBlock(
+                        block.text,
+                        block.page,
+                        block.location,
+                        block.bbox,
+                        block.page_size,
+                        tuple(spans),
+                    )
+                )
+                current.clear()
+                return
+            boxes = [block.bbox for block in current if block.bbox]
+            bbox = (
+                min(box[0] for box in boxes),
+                min(box[1] for box in boxes),
+                max(box[2] for box in boxes),
+                max(box[3] for box in boxes),
+            ) if boxes else None
+            spans = tuple(
+                span
+                for block in current
+                for span in (block.source_spans or (self._source_span(block),))
+            )
+            merged.append(
+                ExtractedBlock(
+                    text="\n".join(block.text for block in current),
+                    page=current[0].page,
+                    location=f"{current[0].location}..{current[-1].location}",
+                    bbox=bbox,
+                    page_size=current[0].page_size,
+                    source_spans=spans,
+                )
+            )
+            current.clear()
+
+        for block in prepared:
+            if not current:
+                current.append(block)
+                continue
+            previous = current[-1]
+            same_page = block.page is not None and block.page == previous.page
+            combined_chars = sum(len(value.text) for value in current) + len(block.text)
+            nearby = False
+            if previous.bbox and block.bbox:
+                vertical_gap = float(block.bbox[1]) - float(previous.bbox[3])
+                horizontal_overlap = min(previous.bbox[2], block.bbox[2]) - max(
+                    previous.bbox[0], block.bbox[0]
+                )
+                nearby = vertical_gap <= 28.0 and horizontal_overlap >= -12.0
+            if same_page and nearby and combined_chars <= self.max_chars:
+                current.append(block)
+            else:
+                flush()
+                current.append(block)
+        flush()
+        return merged
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _cache_key(self, scope: DocumentScope, source_path: Path) -> tuple[str, str, str, str]:
+        metadata = self.encoder.metadata()
+        profile = "|".join(
+            str(metadata.get(key) or "")
+            for key in ("model_id", "provider", "max_length", "dimension")
+        )
+        return scope.tenant_id, scope.case_id, self._file_sha256(source_path), profile
+
+    def _cached_embeddings(
+        self,
+        key: tuple[str, str, str, str],
+        texts: list[str],
+    ) -> np.ndarray | None:
+        signatures = tuple(hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts)
+        with self._cache_lock:
+            cached = self._embedding_cache.get(key)
+            if cached is None or cached[0] != signatures:
+                return None
+            self._embedding_cache.move_to_end(key)
+            return cached[1].copy()
+
+    def _remember_embeddings(
+        self,
+        key: tuple[str, str, str, str],
+        texts: list[str],
+        embeddings: np.ndarray,
+    ) -> None:
+        if self.embedding_cache_size < 1:
+            return
+        signatures = tuple(hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts)
+        with self._cache_lock:
+            self._embedding_cache[key] = (
+                signatures,
+                np.asarray(embeddings, dtype=np.float32).copy(),
+            )
+            self._embedding_cache.move_to_end(key)
+            while len(self._embedding_cache) > self.embedding_cache_size:
+                self._embedding_cache.popitem(last=False)
+
     def _records(
         self,
         scope: DocumentScope,
@@ -196,7 +358,12 @@ class PocUploadProcessor:
         blocks: list[ExtractedBlock],
     ) -> list[ChunkRecord]:
         records: list[ChunkRecord] = []
-        for block_index, block in enumerate(blocks, start=1):
+        source_blocks = (
+            self._coalesce_pdf_blocks(blocks)
+            if source_path.suffix.lower() == ".pdf"
+            else blocks
+        )
+        for block_index, block in enumerate(source_blocks, start=1):
             for part_index, text in enumerate(self._split(block.text), start=1):
                 local_id = f"CH_POC_{len(records) + 1:05d}"
                 global_id = DocumentScope(
@@ -217,6 +384,7 @@ class PocUploadProcessor:
                     "source_location": block.location,
                     "bbox": list(block.bbox) if block.bbox else None,
                     "page_size": list(block.page_size) if block.page_size else None,
+                    "source_spans": list(block.source_spans),
                     "block_index": block_index,
                     "part_index": part_index,
                 }
@@ -266,15 +434,35 @@ class PocUploadProcessor:
 
         progress(FileStatus.PARSING, 45, "첨부자료 텍스트를 추출하고 있습니다.")
         blocks = self.extractor.extract(source_path)
+        progress(FileStatus.PARSING, 60, "본문 블록을 검색 청크로 병합하고 있습니다.")
         records = self._records(scope, source_path, blocks)
         if not records:
             raise ValueError("첨부자료에서 검색 가능한 텍스트를 찾지 못했습니다")
-        progress(FileStatus.INDEXING, 70, "L0 청크의 임베딩 벡터를 생성하고 있습니다.")
-        embeddings = np.asarray(
-            self.encoder.encode_documents([row.embedding_text for row in records]),
-            dtype=np.float32,
-        )
+        texts = [row.embedding_text for row in records]
+        cache_key = self._cache_key(scope, source_path)
+        embeddings = self._cached_embeddings(cache_key, texts)
+        if embeddings is None:
+            progress(FileStatus.INDEXING, 70, f"GPU 임베딩 준비 · {len(texts):,}개 청크")
+            accelerated = getattr(self.encoder, "encode_documents_with_progress", None)
+            if callable(accelerated):
+                def on_batch(done: int, total: int) -> None:
+                    percent = 72 + int(20 * done / max(total, 1))
+                    progress(
+                        FileStatus.INDEXING,
+                        min(percent, 92),
+                        f"GPU 임베딩 배치 {done:,}/{total:,}",
+                    )
+
+                embeddings = np.asarray(accelerated(texts, on_batch), dtype=np.float32)
+            else:
+                embeddings = np.asarray(self.encoder.encode_documents(texts), dtype=np.float32)
+                progress(FileStatus.INDEXING, 92, "임베딩 벡터 생성을 완료했습니다.")
+            self._remember_embeddings(cache_key, texts, embeddings)
+        else:
+            progress(FileStatus.INDEXING, 92, "동일 파일의 임베딩 캐시를 재사용했습니다.")
+        progress(FileStatus.INDEXING, 95, "벡터 인덱스를 저장하고 있습니다.")
         self.vector_store.upsert_document(records, embeddings)
+        progress(FileStatus.INDEXING, 98, "근거 좌표와 청크 메타데이터를 저장하고 있습니다.")
         self._write_json(
             derived / "chunks.json",
             {
@@ -301,7 +489,7 @@ class ShardedAttachmentRetriever:
         encoder: EncoderBackend,
         vector_store: ShardedNpzVectorStore,
         *,
-        top_k: int = 5,
+        top_k: int = 8,
     ) -> None:
         self.encoder = encoder
         self.vector_store = vector_store

@@ -25,7 +25,7 @@ from .web import create_fastapi_app
 @dataclass
 class ColabPocBundle:
     runtime: EphemeralColabRuntime
-    sessions: PocIdentityService
+    sessions: PocIdentityService | None
     upload_processor: PocUploadProcessor
     review_jobs: EphemeralReviewJobService
     generator: TextGenerator
@@ -34,7 +34,8 @@ class ColabPocBundle:
 
     def close(self) -> dict[str, object]:
         if not self._closed:
-            self.sessions.close()
+            if self.sessions is not None:
+                self.sessions.close()
             self._closed = True
         return self.runtime.close(purge=True)
 
@@ -59,6 +60,7 @@ def build_colab_poc(
     encoder: EncoderBackend | None = None,
     generator: TextGenerator | None = None,
     require_content_root: bool = True,
+    anonymous_access: bool = False,
 ) -> ColabPocBundle:
     runtime = EphemeralColabRuntime(
         EphemeralColabConfig(
@@ -106,7 +108,7 @@ def build_colab_poc(
             text_generator,
             upload_processor,
         )
-        sessions = PocIdentityService(
+        sessions = None if anonymous_access else PocIdentityService(
             runtime.root / "metadata" / "identity.sqlite",
             ttl_seconds=session_ttl_seconds,
         )

@@ -92,9 +92,7 @@ def create_fastapi_app(
         case_id: str | None = None,
     ) -> tuple[str, str, PocSession | None]:
         if session_manager is None:
-            if not tenant_id or not case_id:
-                raise HTTPException(status_code=422, detail="tenant_id and case_id are required")
-            return tenant_id, case_id, None
+            return tenant_id or "anonymous", case_id or "public", None
         try:
             session = session_manager.require(token, tenant_id=tenant_id, case_id=case_id)
         except PermissionError as exc:
@@ -167,7 +165,7 @@ def create_fastapi_app(
             "storage_mode": "LOCAL",
         }
         value = dict(value)
-        value["authentication"] = "POC_SESSION" if session_manager else "DEPLOYMENT_DEFINED"
+        value["authentication"] = "POC_SESSION" if session_manager else "ANONYMOUS_POC"
         value["active_sessions"] = session_manager.active_count() if session_manager else None
         value["registered_users"] = (
             session_manager.user_count() if isinstance(session_manager, PocIdentityService) else None

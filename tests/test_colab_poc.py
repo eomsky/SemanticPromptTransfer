@@ -82,9 +82,37 @@ class ColabPocTests(unittest.TestCase):
         self.assertEqual(code.count("FEW_SHOT_2 ="), 1)
         self.assertEqual(code.count("FEW_SHOT_3 ="), 1)
         self.assertNotIn("TwoPassReviewGenerator", code)
-        self.assertIn("max_new_tokens=1200", code)
+
+    def test_v025_notebook_uses_moe_vllm_gpu_embedding_and_anonymous_scope(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+        for cell in notebook["cells"]:
+            if cell.get("cell_type") == "code":
+                compile("".join(cell.get("source", [])), notebook_path.name, "exec")
+        self.assertIn("google/gemma-4-26B-A4B-it", code)
+        self.assertIn("https://wheels.vllm.ai/nightly/cu129", code)
+        self.assertIn('"--pre"', code)
+        self.assertIn('"--max-num-seqs", "4"', code)
+        self.assertIn('"--async-scheduling"', code)
+        self.assertIn('"--limit-mm-per-prompt", "image=0,audio=0"', code)
+        self.assertIn("E5GpuEncoder", code)
+        self.assertIn("anonymous_access=True", code)
+        self.assertIn("NGROK_AUTHTOKEN", code)
+        self.assertNotIn("SPT_GATE_PASSWORD", code)
+        self.assertNotIn("auth=f", code)
+        for number in (1, 2, 3):
+            cell = "".join(notebook["cells"][number + 1]["source"])
+            self.assertIn(f"FEW_SHOT_{number}", cell)
+            self.assertGreater(len(cell), 2000)
+        self.assertIn("max_new_tokens=700", code)
         self.assertIn('secret("NGROK_AUTHTOKEN")', code)
-        self.assertLess(code.index("ngrok.connect"), code.index("loading LLM"))
+        self.assertLess(code.index("ngrok.connect"), code.index("loading vLLM"))
 
     def test_one_click_colab_notebook_has_single_executable_cell(self):
         root = Path(__file__).resolve().parents[1]
@@ -436,6 +464,62 @@ class ColabPocTests(unittest.TestCase):
             self.assertTrue(capture.startswith(b"\x89PNG\r\n\x1a\n"))
             runtime.close(purge=True)
 
+    def test_review_job_uses_attachment_only_rag_without_credit_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = EphemeralColabRuntime(
+                EphemeralColabConfig(
+                    root=Path(tmp) / "runtime",
+                    require_content_root=False,
+                    clean_start=True,
+                )
+            )
+            encoder = FakeEncoder()
+            processor = PocUploadProcessor(
+                encoder,
+                runtime.vectors,
+                runtime.artifacts,
+            )
+            scope = DocumentScope("anonymous-client", "case", "business-report")
+            source = runtime.artifacts.put(
+                scope,
+                "business-report.txt",
+                (
+                    "매출액과 영업이익이 증가하였다. 재고자산과 매입채무가 변동하였다. "
+                    "영업현금흐름과 차입금 상환능력을 점검하였다. 주요 매출처 비중이 변동하였다."
+                ).encode("utf-8"),
+            )
+            runtime.application.register_upload(
+                scope,
+                filename="business-report.txt",
+                document_kind=DocumentKind.ATTACHMENT,
+                size_bytes=source.stat().st_size,
+                storage_uri=str(source),
+                derived_uri=str(runtime.artifacts.derived_path(scope)),
+            )
+            processor.process(
+                scope,
+                source,
+                DocumentKind.ATTACHMENT,
+                lambda status, progress, message: runtime.application.update_upload(
+                    scope, status, progress=progress, message=message
+                ),
+            )
+            service = EphemeralReviewJobService(
+                runtime,
+                ShardedAttachmentRetriever(encoder, runtime.vectors),
+                FewShotSelector(FewShotRegistry([])),
+                EvidenceTemplateGenerator(),
+            )
+            job = service.start("anonymous-client", "case")
+            result = service.run(str(job["job_id"]))
+            self.assertEqual(len(result.sections), 5)
+            for section, prompt in zip(result.sections, result.prompts):
+                self.assertTrue(section.evidence_ids)
+                self.assertTrue(all(value.startswith("ATT_") for value in section.evidence_ids))
+                self.assertFalse(prompt.manifest["credit_report_available"])
+                self.assertTrue(prompt.manifest["attachment_evidence_available"])
+            runtime.close(purge=True)
+
     def test_pdf_capture_uses_page_block_coordinates(self):
         try:
             import fitz
@@ -478,13 +562,26 @@ class ColabPocTests(unittest.TestCase):
             self.assertTrue(capture.startswith(b"\x89PNG\r\n\x1a\n"))
             runtime.close(purge=True)
 
-    def test_remote_llm_adapter_calls_openai_compatible_endpoint(self):
-        received = {}
+    def test_remote_llm_adapter_calls_and_streams_openai_compatible_endpoint(self):
+        received = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 length = int(self.headers["Content-Length"])
-                received.update(json.loads(self.rfile.read(length)))
+                payload = json.loads(self.rfile.read(length))
+                received.append(payload)
+                if payload.get("stream"):
+                    body = (
+                        'data: {"choices":[{"delta":{"content":"근거 기반 "}}]}\n\n'
+                        'data: {"choices":[{"delta":{"content":"스트림"}}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 body = json.dumps(
                     {"choices": [{"message": {"content": "근거 기반 응답 EV-1"}}]}
                 ).encode("utf-8")
@@ -510,23 +607,25 @@ class ColabPocTests(unittest.TestCase):
             )
             text = generator.generate([{"role": "user", "content": "작성"}])
             self.assertEqual(text, "근거 기반 응답 EV-1")
-            self.assertEqual(received["model"], "test-model")
+            self.assertEqual("".join(generator.stream([{"role": "user", "content": "작성"}])), "근거 기반 스트림")
+            self.assertEqual(received[0]["model"], "test-model")
+            self.assertFalse(received[0]["stream"])
+            self.assertTrue(received[1]["stream"])
         finally:
             server.shutdown()
             thread.join()
             server.server_close()
 
-    def test_html_declares_runtime_health_and_poc_session_contract(self):
+    def test_html_declares_anonymous_runtime_and_evidence_contract(self):
         html = (
             Path(__file__).resolve().parents[1]
             / "src/semantic_prompt_transfer/examples/operational/credit_review_upload_demo.html"
         ).read_text(encoding="utf-8")
         for value in (
             "/api/v1/runtime/health",
-            "/api/v1/poc/users",
-            "/api/v1/poc/login",
             "/api/v1/templates/credit-report.xlsx",
-            "X-POC-Token",
+            "sptAnonymousClientV1",
+            "로그인 없는 시간 제한형 Colab POC",
             "Colab 연결됨",
             "심사의견.docx",
             "양식 다운로드",
@@ -540,6 +639,8 @@ class ColabPocTests(unittest.TestCase):
         self.assertNotIn("업로드 자료현황", html)
         self.assertNotIn("추가 산출물", html)
         self.assertNotIn("generate_optional_artifacts", html)
+        self.assertNotIn("/api/v1/poc/login", html)
+        self.assertNotIn("X-POC-Token", html)
 
 
 if __name__ == "__main__":

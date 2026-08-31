@@ -62,6 +62,17 @@ class OpinionValidator:
             issues.append(
                 ValidationIssue("missing_evidence_citation", "ERROR", "근거가 있으나 evidence_id 인용이 없습니다.")
             )
+        attachment_ids = {
+            row.evidence_id for row in evidence_rows if int(row.source_tier) == 3
+        }
+        if attachment_ids and not attachment_ids.intersection(cited):
+            issues.append(
+                ValidationIssue(
+                    "missing_attachment_citation",
+                    "WARNING",
+                    "관련 첨부자료가 제공되었으나 최종 문구에 첨부자료 근거가 인용되지 않았습니다.",
+                )
+            )
 
         scrubbed = text
         for evidence_id in evidence_ids:

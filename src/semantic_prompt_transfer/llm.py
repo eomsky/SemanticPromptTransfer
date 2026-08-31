@@ -34,7 +34,7 @@ class RemoteGenerationConfig:
     api_key: str | None = None
     api_key_env: str = "SPT_LLM_API_KEY"
     timeout_seconds: float = 120.0
-    max_new_tokens: int = 512
+    max_new_tokens: int = 700
     temperature: float = 0.0
     allow_insecure_http: bool = False
 
@@ -60,22 +60,27 @@ class OpenAICompatibleHttpGenerator:
         base = self.config.base_url.rstrip("/")
         return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
-    def generate(self, messages: list[dict[str, str]]) -> str:
-        payload = json.dumps(
+    def _payload(self, messages: list[dict[str, str]], *, stream: bool) -> bytes:
+        return json.dumps(
             {
                 "model": self.config.model,
                 "messages": messages,
                 "temperature": self.config.temperature,
                 "max_tokens": self.config.max_new_tokens,
-                "stream": False,
+                "stream": stream,
             },
             ensure_ascii=False,
         ).encode("utf-8")
+
+    def _request(self, payload: bytes, *, accept: str) -> request.Request:
         api_key = self.config.api_key or os.environ.get(self.config.api_key_env)
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": accept}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        call = request.Request(self._url(), data=payload, headers=headers, method="POST")
+        return request.Request(self._url(), data=payload, headers=headers, method="POST")
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        call = self._request(self._payload(messages, stream=False), accept="application/json")
         try:
             with request.urlopen(call, timeout=self.config.timeout_seconds) as response:
                 result = json.loads(response.read().decode("utf-8"))
@@ -91,6 +96,35 @@ class OpenAICompatibleHttpGenerator:
         if not text:
             raise RuntimeError("remote LLM returned empty text")
         return text
+
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        """Yield OpenAI-compatible SSE deltas, including local vLLM streams."""
+        call = self._request(
+            self._payload(messages, stream=True),
+            accept="text/event-stream",
+        )
+        try:
+            with request.urlopen(call, timeout=self.config.timeout_seconds) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        event = json.loads(data)
+                        delta = event["choices"][0].get("delta") or {}
+                        content = delta.get("content")
+                    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+                        raise RuntimeError("remote LLM stream contains an invalid event") from exc
+                    if content:
+                        yield str(content)
+        except error.HTTPError as exc:
+            detail = exc.read(500).decode("utf-8", errors="replace")
+            raise RuntimeError(f"remote LLM HTTP {exc.code}: {detail}") from exc
+        except (error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"remote LLM stream failed: {exc}") from exc
 
 
 class EvidenceTemplateGenerator:

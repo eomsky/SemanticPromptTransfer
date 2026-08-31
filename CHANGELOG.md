@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.25.0 - 2026-08-31
+
+- Replaced the dense Gemma runtime with `google/gemma-4-26B-A4B-it` MoE served
+  by vLLM, with BF16, prefix caching, streaming, and four continuous-batched sequences.
+- Added a shared GPU E5 encoder with batch progress, conservative PDF block
+  coalescing, an in-memory reuse cache, and thread-safe single-GPU execution.
+- Removed the notebook's application login and ngrok Basic Auth; anonymous POC
+  users receive random browser-local scopes instead of IP-derived identities.
+- Allowed attachment-only RAG when no credit report is uploaded and reserved a
+  separate TIER 3 prompt budget so business-report evidence is not crowded out.
+- Hid raw `CR_`/`ATT_` identifiers from visible HTML and Word text while keeping
+  the server-side evidence mapping and clickable source-type controls.
+- Enlarged the evidence modal and added zoomable, high-resolution PDF and
+  Excel-style captures with Korean fonts and source highlighting.
+- Pre-populated all three notebook FEW SHOT cells and set the per-item generation
+  ceiling to 700 tokens.
+
 ## 0.22.0 - 2026-08-31
 
 - Added a Drive-backed, single-code-cell Colab launcher with asset SHA-256

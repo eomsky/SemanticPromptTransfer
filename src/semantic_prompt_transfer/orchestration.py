@@ -113,9 +113,13 @@ class ReviewGenerationOrchestrator:
 
         try:
             emit(JobStage.PRECHECK, 5, "입력자료와 심사범위를 확인했습니다.")
-            if not credit_facts:
-                raise ValueError("credit report facts are required")
-            emit(JobStage.CREDIT_REPORT_LOAD, 20, "신용조사서 정형자료를 로드했습니다.")
+            emit(
+                JobStage.CREDIT_REPORT_LOAD,
+                20,
+                "신용조사서 정형자료를 로드했습니다."
+                if credit_facts
+                else "신용조사서 미첨부 · 첨부자료 기준으로 생성합니다.",
+            )
             emit(JobStage.ATTACHMENT_RETRIEVAL, 30, "기타 첨부파일 검색을 시작합니다.")
 
             sections: list[ReviewSectionDraft] = []
@@ -133,6 +137,8 @@ class ReviewGenerationOrchestrator:
                     filters={"tenant_id": case.tenant_id, "case_id": case.case_id},
                 )
                 evidence = self.evidence_assembler.assemble(item, credit_facts, retrieval)
+                if not evidence:
+                    raise ValueError(f"item {item.value} has no usable evidence")
                 examples = self.few_shot_selector.select(
                     item,
                     loan_type=case.loan_type,

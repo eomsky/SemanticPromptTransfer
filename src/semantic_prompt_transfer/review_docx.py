@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -9,6 +10,15 @@ from .version import PACKAGE_VERSION
 
 class OpinionDocumentBuilder:
     """Render the validated five-item review opinion as a Word document."""
+
+    _citation = re.compile(r"\[?\s*(?:CR|ATT)_[a-f0-9]{20}\s*\]?", re.IGNORECASE)
+
+    @classmethod
+    def _visible_text(cls, text: str) -> str:
+        value = cls._citation.sub("", str(text or ""))
+        value = re.sub(r"\[\s*(?:,\s*)+\]", "", value)
+        value = re.sub(r"\s+([.,;:])", r"\1", value)
+        return re.sub(r"[ \t]{2,}", " ", value).strip()
 
     def build(
         self,
@@ -75,7 +85,7 @@ class OpinionDocumentBuilder:
             heading.paragraph_format.space_after = Pt(4)
             run = heading.add_run(f"{label}. {item.title}")
             run.bold = True
-            body = document.add_paragraph(by_item[item].text)
+            body = document.add_paragraph(self._visible_text(by_item[item].text))
             body.paragraph_format.line_spacing = 1.25
             body.paragraph_format.space_after = Pt(6)
 
@@ -84,11 +94,19 @@ class OpinionDocumentBuilder:
         trace = document.add_table(rows=1, cols=2)
         trace.style = "Table Grid"
         trace.rows[0].cells[0].text = "심사항목"
-        trace.rows[0].cells[1].text = "사용 근거 ID"
+        trace.rows[0].cells[1].text = "사용 근거"
         for item in ReviewItem.ordered():
             cells = trace.add_row().cells
             cells[0].text = f"{item.value}. {item.title}"
-            cells[1].text = ", ".join(by_item[item].evidence_ids) or "없음"
+            identifiers = by_item[item].evidence_ids
+            credit_count = sum(value.upper().startswith("CR_") for value in identifiers)
+            attachment_count = sum(value.upper().startswith("ATT_") for value in identifiers)
+            labels = []
+            if credit_count:
+                labels.append(f"신용조사서 {credit_count}건")
+            if attachment_count:
+                labels.append(f"첨부자료 {attachment_count}건")
+            cells[1].text = " / ".join(labels) or "없음"
 
         footer = section.footer.paragraphs[0]
         footer.alignment = WD_ALIGN_PARAGRAPH.CENTER

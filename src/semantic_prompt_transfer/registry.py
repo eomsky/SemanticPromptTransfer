@@ -260,7 +260,7 @@ class OperationalRegistry:
         message: str | None = None,
     ) -> DocumentRecord:
         current = self.get_document(tenant_id, case_id, document_id)
-        if status not in ALLOWED_FILE_TRANSITIONS[current.status]:
+        if status is not current.status and status not in ALLOWED_FILE_TRANSITIONS[current.status]:
             raise ValueError(f"invalid file transition: {current.status.value} -> {status.value}")
         next_progress = status.default_progress if progress is None else int(progress)
         if not 0 <= next_progress <= 100:
