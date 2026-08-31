@@ -23,13 +23,13 @@ jobs:
         run: python -m pip install --upgrade build twine
 
       - name: Build distributions
-        run: python -m build
+        run: python -m build --outdir release-dist
 
       - name: Check package metadata
-        run: python -m twine check dist/*
+        run: python -m twine check release-dist/*
 
       - name: Install wheel
-        run: python -m pip install dist/*.whl
+        run: python -m pip install release-dist/*.whl
 
       - name: Run tests against installed wheel
         run: python -m unittest discover -s tests -v
@@ -38,7 +38,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions
-          path: dist/
+          path: release-dist/
           if-no-files-found: error
 
   publish-to-pypi:
