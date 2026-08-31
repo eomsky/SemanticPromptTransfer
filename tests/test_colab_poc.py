@@ -114,7 +114,8 @@ class ColabPocTests(unittest.TestCase):
             cell = "".join(notebook["cells"][number + 1]["source"])
             self.assertIn(f"FEW_SHOT_{number}", cell)
             self.assertGreater(len(cell), 2000)
-        self.assertIn("max_new_tokens=700", code)
+        self.assertIn("max_new_tokens=1400", code)
+        self.assertIn("max_continuations=2", code)
         self.assertIn('secret("NGROK_AUTHTOKEN")', code)
         self.assertLess(code.index("ngrok.connect"), code.index("loading vLLM"))
 
@@ -524,6 +525,90 @@ class ColabPocTests(unittest.TestCase):
                 self.assertTrue(prompt.manifest["attachment_evidence_available"])
             runtime.close(purge=True)
 
+    def test_free_chat_starts_after_review_and_accumulates_context_without_few_shots(self):
+        class ContextGenerator:
+            def __init__(self):
+                self.calls = []
+
+            def stream(self, messages):
+                self.calls.append([dict(row) for row in messages])
+                if "후속 대화이므로" in messages[0]["content"]:
+                    yield "이전 대화와 심사의견을 이해한 후속 답변입니다."
+                    return
+                match = re.search(r"evidence_id=([^\n]+)", messages[1]["content"])
+                yield f"승인예시문구가 아닌 현재 근거로 심사의견을 완결하였다. [{match.group(1)}]"
+
+            def generate(self, messages):
+                return "".join(self.stream(messages))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = EphemeralColabRuntime(
+                EphemeralColabConfig(
+                    root=Path(tmp) / "runtime",
+                    require_content_root=False,
+                    clean_start=True,
+                )
+            )
+            encoder = FakeEncoder()
+            processor = PocUploadProcessor(encoder, runtime.vectors, runtime.artifacts)
+            scope = DocumentScope("chat-user", "chat-case", "report")
+            source = runtime.artifacts.put(
+                scope,
+                "business-report.txt",
+                "매출 증가와 재고 변동 및 현금흐름을 확인하였다.".encode("utf-8"),
+            )
+            runtime.application.register_upload(
+                scope,
+                filename="business-report.txt",
+                document_kind=DocumentKind.ATTACHMENT,
+                size_bytes=source.stat().st_size,
+                storage_uri=str(source),
+                derived_uri=str(runtime.artifacts.derived_path(scope)),
+            )
+            processor.process(
+                scope,
+                source,
+                DocumentKind.ATTACHMENT,
+                lambda status, progress, message: runtime.application.update_upload(
+                    scope, status, progress=progress, message=message
+                ),
+            )
+            generator = ContextGenerator()
+            examples = [
+                FewShotExample(
+                    f"FS-{item.value}",
+                    item,
+                    "과거 사례 입력",
+                    "승인예시문구",
+                    loan_types=("*",),
+                    industry_codes=("*",),
+                )
+                for item in ReviewItem.ordered()
+            ]
+            service = EphemeralReviewJobService(
+                runtime,
+                ShardedAttachmentRetriever(encoder, runtime.vectors),
+                FewShotSelector(FewShotRegistry(examples)),
+                generator,
+                processor,
+            )
+            job = service.start("chat-user", "chat-case")
+            job_id = str(job["job_id"])
+            with self.assertRaises(RuntimeError):
+                list(service.stream_chat(job_id, "생성 전 질문"))
+            service.run(job_id)
+            first = list(service.stream_chat(job_id, "첫 번째 질문"))
+            second = list(service.stream_chat(job_id, "앞선 답변을 바탕으로 다시 설명해줘"))
+            self.assertEqual(first[-1]["type"], "chat_complete")
+            self.assertEqual(second[-1]["agent"], "심사지원 에이전트")
+            second_prompt = generator.calls[-1]
+            combined = "\n".join(row["content"] for row in second_prompt)
+            self.assertIn("[완료된 심사의견]", combined)
+            self.assertIn("첫 번째 질문", combined)
+            self.assertIn("이전 대화와 심사의견을 이해한 후속 답변입니다.", combined)
+            self.assertNotIn("과거 사례 입력", combined)
+            runtime.close(purge=True)
+
     def test_pdf_capture_uses_page_block_coordinates(self):
         try:
             import fitz
@@ -620,6 +705,57 @@ class ColabPocTests(unittest.TestCase):
             thread.join()
             server.server_close()
 
+    def test_remote_stream_continues_when_finish_reason_is_length(self):
+        received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers["Content-Length"])
+                received.append(json.loads(self.rfile.read(length)))
+                if len(received) == 1:
+                    body = (
+                        'data: {"choices":[{"delta":{"content":"문장이 "},"finish_reason":null}]}\n\n'
+                        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ).encode("utf-8")
+                else:
+                    body = (
+                        'data: {"choices":[{"delta":{"content":"완결되었습니다."},"finish_reason":null}]}\n\n'
+                        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            generator = OpenAICompatibleHttpGenerator(
+                RemoteGenerationConfig(
+                    base_url=f"http://127.0.0.1:{server.server_port}",
+                    model="test-model",
+                    max_new_tokens=32,
+                    max_continuations=1,
+                    allow_insecure_http=True,
+                )
+            )
+            text = "".join(generator.stream([{"role": "user", "content": "완결 요청"}]))
+            self.assertEqual(text, "문장이 완결되었습니다.")
+            self.assertEqual(len(received), 2)
+            self.assertEqual(received[1]["messages"][-2]["role"], "assistant")
+            self.assertIn("중단된 문장부터", received[1]["messages"][-1]["content"])
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
     def test_html_declares_anonymous_runtime_and_evidence_contract(self):
         html = (
             Path(__file__).resolve().parents[1]
@@ -638,6 +774,12 @@ class ColabPocTests(unittest.TestCase):
             "/capture.png",
             "심사의견 생성 내용",
             "currentStage",
+            "심사의견 다운로드",
+            "심사지원 에이전트",
+            "심사의견으로 돌아가기",
+            "/chat/stream",
+            "id=\"chatArea\"",
+            "chatArea').hidden=false",
         ):
             self.assertIn(value, html)
         self.assertNotIn("업로드 자료현황", html)
@@ -645,6 +787,11 @@ class ColabPocTests(unittest.TestCase):
         self.assertNotIn("generate_optional_artifacts", html)
         self.assertNotIn("/api/v1/poc/login", html)
         self.assertNotIn("X-POC-Token", html)
+        self.assertNotIn("Word 다운로드", html)
+        self.assertNotIn("심사의견 도우미", html)
+        self.assertNotIn("상태 미리보기", html)
+        self.assertNotIn("후속 대화에는 few-shot 미사용", html)
+        self.assertLess(html.index('id="chatForm"'), html.index('id="returnOpinion"'))
 
 
 if __name__ == "__main__":

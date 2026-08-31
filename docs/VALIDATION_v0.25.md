@@ -4,12 +4,16 @@
 
 ## 완료한 검증
 
-- Python 단위·통합 테스트 35개 통과
+- Python 단위·통합 테스트 37개 통과
 - v0.25 노트북의 모든 Python 코드 셀 컴파일 통과
 - 기본 FEW SHOT 3건 × A~E가 모두 비어 있지 않음을 확인
 - MoE 모델 ID, vLLM 4개 시퀀스, GPU E5, 익명 POC 설정을 노트북 계약으로 확인
 - 신용조사서 없이 첨부자료만 업로드한 A~E 생성 경로 통과
 - OpenAI-compatible SSE 스트리밍 수신 통과
+- vLLM `finish_reason=length` 발생 시 자동 이어쓰기와 문장 완결 경로 통과
+- 심사의견 완료 전 대화 차단, 완료 후 자유대화, 심사의견·누적 Q&A 문맥 전달,
+  후속 대화 few-shot 제외 계약 통과
+- 입력창 완료 후 동적 노출, 업무시스템형 각진 UI, 다운로드·에이전트 명칭 계약 통과
 - PDF 좌표 캡처 및 XLSX 원문형 캡처 PNG 생성 통과
 - 실제 제공된 `양식파일_ABC기업_v1.0.xlsx`의 `7. 종합의견` 범위를 렌더링해
   한글, 숫자, 행·열 구조와 강조 표시를 육안 확인
@@ -20,8 +24,8 @@
 
 | 산출물 | 크기 | SHA-256 |
 |---|---:|---|
-| `semantic_prompt_transfer-0.25.0-py3-none-any.whl` | 171,834 | `01f76379388d237e2e9d577c57555e9939fee684ffebe6861d101de55dcaeaba` |
-| `SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb` | 42,693 | `aba0b70c50a722c47d80284edd50a849b962db645feb7dd3322cc08bef227b83` |
+| `semantic_prompt_transfer-0.25.0-py3-none-any.whl` | 176,210 | `7102aa7416f56acb5a7e45440cf875e122f92661439028798d8325193fdc737d` |
+| `SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb` | 42,741 | `16c82e77ef046a8eadf92eeb2a57f60df5f5bb634d3d455012e29717627ed76f` |
 | `few_shot_defaults_v1.json` | 18,439 | `846f2b7a301491948223b964d9926176a0ee49a19f05a9f2f9c427fdc234e01d` |
 
 ## Colab에서 확인할 항목
@@ -35,4 +39,4 @@
 5. 실제 ngrok 계정에서 새 무작위 URL이 로그인 없이 바로 열리는지
 
 운영 판정 기준은 모델 로드 완료, 업로드 자료별 100%, A~E 스트리밍 완료,
-근거 팝업 정상 표시, Word 다운로드 성공이다.
+근거 팝업 정상 표시, 심사의견 다운로드와 후속 대화 스트리밍 성공이다.

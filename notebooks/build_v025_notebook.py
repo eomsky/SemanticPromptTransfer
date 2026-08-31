@@ -219,7 +219,7 @@ for _ in range(1800):
     time.sleep(1)
 if not vllm_ready:
     raise RuntimeError("vLLM did not become healthy within 30 minutes")
-log("vLLM ready · streaming generation · maximum 700 tokens per item")
+log("vLLM ready · streaming generation · 1400 tokens + automatic continuation")
 
 # A100의 남은 메모리에서 작은 E5를 상주시켜 임베딩을 GPU 배치 처리합니다.
 embedding_encoder = E5GpuEncoder(
@@ -234,7 +234,8 @@ local_generator = OpenAICompatibleHttpGenerator(
         model=MODEL_ID,
         api_key=vllm_api_key,
         timeout_seconds=300,
-        max_new_tokens=700,
+        max_new_tokens=1400,
+        max_continuations=2,
         temperature=0.0,
         allow_insecure_http=True,
     )

@@ -26,6 +26,9 @@ locations, version history, and remaining work are consolidated in
 6. Clicking a cited claim or its source-type button opens a large, zoomable,
    highlighted source capture for the exact
    PDF block or Excel cell range. The completed opinion is downloaded as DOCX.
+7. Only after the full A–E stream completes, a follow-up input appears. Later
+   turns omit few shots and the A–E schema, retain the completed opinion and
+   accumulated question/answer history, and stream a free-form response.
 
 ## Source priority and few shots
 
@@ -88,7 +91,9 @@ export SPT_LLM_API_KEY=optional-secret
 
 The remote adapter follows an OpenAI-compatible streaming `chat/completions`
 contract. Replacing the LLM does not change retrieval, validation, progress, or
-DOCX rendering.
+DOCX rendering. The response ceiling is 1,400 tokens. A `finish_reason=length`
+response automatically continues up to two times so an incomplete final sentence
+is never accepted as a completed response.
 
 ## Downloadable Excel form
 
@@ -116,6 +121,7 @@ GET    /api/v1/review-jobs/{job_id}/stream
 GET    /api/v1/review-jobs/{job_id}/evidence/{evidence_id}
 GET    /api/v1/review-jobs/{job_id}/evidence/{evidence_id}/capture.png
 GET    /api/v1/review-jobs/{job_id}/opinion.docx
+POST   /api/v1/review-jobs/{job_id}/chat/stream
 ```
 
 The v0.25 notebook runs the API in anonymous POC mode. The packaged server still

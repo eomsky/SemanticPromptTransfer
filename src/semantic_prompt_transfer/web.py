@@ -35,6 +35,10 @@ class ReviewJobStarter(Protocol):
 
     def capture_evidence(self, job_id: str, evidence_id: str) -> bytes: ...
 
+    def assert_chat_ready(self, job_id: str) -> None: ...
+
+    def stream_chat(self, job_id: str, message: str) -> Iterator[dict[str, Any]]: ...
+
 
 def create_fastapi_app(
     application: OperationalApplicationService,
@@ -401,6 +405,40 @@ def create_fastapi_app(
             target,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             filename=target.name,
+        )
+
+    @app.post("/api/v1/review-jobs/{job_id}/chat/stream")
+    def chat_stream(
+        job_id: str,
+        payload: dict[str, Any] = Body(...),
+        x_poc_token: str | None = Header(None),
+    ):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            raise HTTPException(status_code=400, detail="chat message is required")
+        try:
+            review_jobs.assert_chat_ready(job_id)
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        def lines():
+            try:
+                for event in review_jobs.stream_chat(job_id, message):
+                    yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+            except Exception as exc:
+                yield json.dumps(
+                    {"type": "chat_error", "message": str(exc)},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ) + "\n"
+
+        return StreamingResponse(
+            lines(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
 
     return app

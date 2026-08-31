@@ -49,3 +49,8 @@ The user's pre-upload local source is outside this deletion boundary.
 polls `GET /api/v1/review-jobs/{job_id}` and retains the only progress bar in the
 screen. At 100%, `GET /api/v1/review-jobs/{job_id}/opinion.docx` returns the Word
 file.
+
+Only a completed job accepts `POST /api/v1/review-jobs/{job_id}/chat/stream`.
+The NDJSON response streams `chat_start`, `chat_token`, and `chat_complete`.
+Follow-up prompts omit generation few shots and include the completed opinion,
+uploaded evidence, and the same job's accumulated user/assistant turns.

@@ -4,7 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Iterator, Protocol
+from typing import Any, Generator, Iterator, Protocol
 from urllib import error, parse, request
 
 
@@ -34,7 +34,8 @@ class RemoteGenerationConfig:
     api_key: str | None = None
     api_key_env: str = "SPT_LLM_API_KEY"
     timeout_seconds: float = 120.0
-    max_new_tokens: int = 700
+    max_new_tokens: int = 1400
+    max_continuations: int = 2
     temperature: float = 0.0
     allow_insecure_http: bool = False
 
@@ -48,6 +49,10 @@ class RemoteGenerationConfig:
             raise ValueError("remote LLM model is required")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if self.max_new_tokens < 1:
+            raise ValueError("max_new_tokens must be positive")
+        if self.max_continuations < 0:
+            raise ValueError("max_continuations cannot be negative")
 
 
 class OpenAICompatibleHttpGenerator:
@@ -80,29 +85,55 @@ class OpenAICompatibleHttpGenerator:
         return request.Request(self._url(), data=payload, headers=headers, method="POST")
 
     def generate(self, messages: list[dict[str, str]]) -> str:
-        call = self._request(self._payload(messages, stream=False), accept="application/json")
-        try:
-            with request.urlopen(call, timeout=self.config.timeout_seconds) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            detail = exc.read(500).decode("utf-8", errors="replace")
-            raise RuntimeError(f"remote LLM HTTP {exc.code}: {detail}") from exc
-        except (error.URLError, TimeoutError) as exc:
-            raise RuntimeError(f"remote LLM request failed: {exc}") from exc
-        try:
-            text = result["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, AttributeError, TypeError) as exc:
-            raise RuntimeError("remote LLM response does not contain message content") from exc
-        if not text:
-            raise RuntimeError("remote LLM returned empty text")
-        return text
+        working = [dict(row) for row in messages]
+        pieces: list[str] = []
+        for continuation in range(self.config.max_continuations + 1):
+            call = self._request(self._payload(working, stream=False), accept="application/json")
+            try:
+                with request.urlopen(call, timeout=self.config.timeout_seconds) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            except error.HTTPError as exc:
+                detail = exc.read(500).decode("utf-8", errors="replace")
+                raise RuntimeError(f"remote LLM HTTP {exc.code}: {detail}") from exc
+            except (error.URLError, TimeoutError) as exc:
+                raise RuntimeError(f"remote LLM request failed: {exc}") from exc
+            try:
+                choice = result["choices"][0]
+                text = choice["message"]["content"].strip()
+                finish_reason = choice.get("finish_reason")
+            except (KeyError, IndexError, AttributeError, TypeError) as exc:
+                raise RuntimeError("remote LLM response does not contain message content") from exc
+            if not text:
+                raise RuntimeError("remote LLM returned empty text")
+            pieces.append(text)
+            if finish_reason != "length":
+                return "".join(pieces).strip()
+            if continuation >= self.config.max_continuations:
+                break
+            working = self._continuation_messages(messages, "".join(pieces))
+        raise RuntimeError("remote LLM could not complete the response within continuation limit")
 
-    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
-        """Yield OpenAI-compatible SSE deltas, including local vLLM streams."""
-        call = self._request(
-            self._payload(messages, stream=True),
-            accept="text/event-stream",
-        )
+    @staticmethod
+    def _continuation_messages(
+        messages: list[dict[str, str]], generated: str
+    ) -> list[dict[str, str]]:
+        return [
+            *[dict(row) for row in messages],
+            {"role": "assistant", "content": generated},
+            {
+                "role": "user",
+                "content": (
+                    "직전 응답이 토큰 한도로 중단되었다. 이미 작성한 내용을 반복하지 말고 "
+                    "중단된 문장부터 이어서 전체 답변을 완결된 문장으로 마무리하라."
+                ),
+            },
+        ]
+
+    def _stream_once(
+        self, messages: list[dict[str, str]]
+    ) -> Generator[str, None, str | None]:
+        call = self._request(self._payload(messages, stream=True), accept="text/event-stream")
+        finish_reason: str | None = None
         try:
             with request.urlopen(call, timeout=self.config.timeout_seconds) as response:
                 for raw_line in response:
@@ -111,11 +142,14 @@ class OpenAICompatibleHttpGenerator:
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
-                        return
+                        return finish_reason
                     try:
                         event = json.loads(data)
-                        delta = event["choices"][0].get("delta") or {}
+                        choice = event["choices"][0]
+                        delta = choice.get("delta") or {}
                         content = delta.get("content")
+                        if choice.get("finish_reason") is not None:
+                            finish_reason = str(choice["finish_reason"])
                     except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
                         raise RuntimeError("remote LLM stream contains an invalid event") from exc
                     if content:
@@ -125,6 +159,29 @@ class OpenAICompatibleHttpGenerator:
             raise RuntimeError(f"remote LLM HTTP {exc.code}: {detail}") from exc
         except (error.URLError, TimeoutError) as exc:
             raise RuntimeError(f"remote LLM stream failed: {exc}") from exc
+        return finish_reason
+
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        """Yield SSE deltas and continue automatically when vLLM stops on length."""
+        working = [dict(row) for row in messages]
+        generated: list[str] = []
+        for continuation in range(self.config.max_continuations + 1):
+            current = self._stream_once(working)
+            while True:
+                try:
+                    token = next(current)
+                except StopIteration as stopped:
+                    finish_reason = stopped.value
+                    break
+                generated.append(token)
+                yield token
+            if finish_reason != "length":
+                return
+            if continuation >= self.config.max_continuations:
+                raise RuntimeError(
+                    "remote LLM could not complete the response within continuation limit"
+                )
+            working = self._continuation_messages(messages, "".join(generated))
 
 
 class EvidenceTemplateGenerator:

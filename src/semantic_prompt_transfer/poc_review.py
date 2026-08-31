@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -73,6 +74,9 @@ class EphemeralReviewJobService:
         self._condition = threading.Condition(threading.RLock())
         self._events: dict[str, list[dict[str, Any]]] = {}
         self._evidence: dict[str, dict[str, dict[str, Any]]] = {}
+        self._results: dict[str, ReviewGenerationResult] = {}
+        self._chat_history: dict[str, list[dict[str, str]]] = {}
+        self._chat_locks: dict[str, threading.Lock] = {}
         self._terminal_jobs: set[str] = set()
 
     def _publish(self, job_id: str, event_type: str, **payload: Any) -> dict[str, Any]:
@@ -110,6 +114,8 @@ class EphemeralReviewJobService:
         with self._condition:
             self._events[job.job_id] = []
             self._evidence[job.job_id] = {}
+            self._chat_history[job.job_id] = []
+            self._chat_locks[job.job_id] = threading.Lock()
             self._terminal_jobs.discard(job.job_id)
         self._publish(
             job.job_id,
@@ -241,6 +247,8 @@ class EphemeralReviewJobService:
                 section_callback=on_section,
                 job_id=job_id,
             )
+            with self._condition:
+                self._results[job_id] = result
             self._publish(
                 job_id,
                 "complete",
@@ -321,3 +329,111 @@ class EphemeralReviewJobService:
         if evidence is None:
             raise KeyError(evidence_id)
         return self.capture_service.capture_png(job.tenant_id, job.case_id, evidence)
+
+    @staticmethod
+    def _visible_text(text: str) -> str:
+        value = re.sub(r"\[?\s*(?:CR|ATT)_[a-f0-9]{20}\s*\]?", "", str(text), flags=re.I)
+        value = re.sub(r"\s+([.,;:])", r"\1", value)
+        return re.sub(r"[ \t]{2,}", " ", value).strip()
+
+    def assert_chat_ready(self, job_id: str) -> None:
+        job = self.runtime.registry.get_job(job_id)
+        with self._condition:
+            result = self._results.get(job_id)
+        if job.stage is not JobStage.COMPLETE or job.progress != 100 or result is None:
+            raise RuntimeError("심사의견 스트림 완료 후에만 후속 대화를 시작할 수 있습니다.")
+
+    def _chat_messages(self, job_id: str, message: str) -> list[dict[str, str]]:
+        self.assert_chat_ready(job_id)
+        with self._condition:
+            result = self._results[job_id]
+            history = [dict(row) for row in self._chat_history.get(job_id, [])]
+            evidence_rows = list(self._evidence.get(job_id, {}).values())
+
+        opinion = "\n\n".join(
+            f"{section.review_item.value}. {section.review_item.title}\n"
+            f"{self._visible_text(section.text)}"
+            for section in result.sections
+        )
+        evidence_blocks: list[str] = []
+        evidence_characters = 0
+        for row in evidence_rows:
+            content = str(row.get("content") or "").strip()
+            if not content:
+                continue
+            block = (
+                f"자료: {row.get('source_filename') or '업로드 자료'}"
+                f" / 위치: {row.get('location') or row.get('page') or '-'}\n"
+                f"{content}"
+            )
+            if evidence_characters + len(block) > 10000:
+                break
+            evidence_blocks.append(block)
+            evidence_characters += len(block)
+
+        system = (
+            "당신은 기업여신 검토를 지원하는 '심사지원 에이전트'다. "
+            "심사의견 생성 이후의 자유로운 후속 대화이므로 심사항목 A-E 형식, "
+            "few-shot 문체 예시, 심사의견 생성용 검증 절차를 적용하지 않는다. "
+            "사용자의 질문과 요청에 자연스럽게 답하라. 심사건의 사실을 말할 때에는 "
+            "아래 심사의견과 업로드 근거자료를 우선 사용하고, 근거에 없는 수치는 만들어내지 마라. "
+            "내부 근거 키(CR_, ATT_)는 화면에 출력하지 마라. "
+            "답변은 마지막 문장까지 완결하고 토큰 한도에서 문장을 중단하지 마라.\n\n"
+            "[완료된 심사의견]\n"
+            + opinion
+            + "\n\n[업로드 근거자료]\n"
+            + ("\n\n".join(evidence_blocks) if evidence_blocks else "별도 근거자료 없음")
+        )
+
+        # The UI has no turn limit. Only the request context is bounded so the
+        # vLLM call remains inside the configured model context window.
+        selected: list[dict[str, str]] = []
+        used = 0
+        for row in reversed(history):
+            size = len(row.get("content", ""))
+            if used + size > 14000:
+                break
+            selected.append(row)
+            used += size
+        selected.reverse()
+        return [{"role": "system", "content": system}, *selected, {"role": "user", "content": message}]
+
+    def stream_chat(self, job_id: str, message: str) -> Iterator[dict[str, Any]]:
+        prompt = str(message or "").strip()
+        if not prompt:
+            raise ValueError("대화 메시지를 입력해 주세요.")
+        self.assert_chat_ready(job_id)
+        with self._condition:
+            chat_lock = self._chat_locks.setdefault(job_id, threading.Lock())
+        if not chat_lock.acquire(blocking=False):
+            raise RuntimeError("이 심사건의 이전 답변이 아직 생성 중입니다.")
+        try:
+            messages = self._chat_messages(job_id, prompt)
+            with self._condition:
+                self._chat_history.setdefault(job_id, []).append(
+                    {"role": "user", "content": prompt}
+                )
+            yield {"type": "chat_start", "agent": "심사지원 에이전트"}
+            stream = getattr(self.generator, "stream", None)
+            pieces: list[str] = []
+            if callable(stream):
+                for token in stream(messages):
+                    token_text = str(token)
+                    if token_text:
+                        pieces.append(token_text)
+                        yield {"type": "chat_token", "token": token_text}
+            else:
+                generated = self.generator.generate(messages)
+                if generated:
+                    pieces.append(str(generated))
+                    yield {"type": "chat_token", "token": str(generated)}
+            answer = "".join(pieces).strip()
+            if not answer:
+                raise RuntimeError("심사지원 에이전트가 빈 답변을 반환했습니다.")
+            with self._condition:
+                self._chat_history.setdefault(job_id, []).append(
+                    {"role": "assistant", "content": answer}
+                )
+            yield {"type": "chat_complete", "text": answer, "agent": "심사지원 에이전트"}
+        finally:
+            chat_lock.release()

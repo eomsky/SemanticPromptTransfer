@@ -14,10 +14,17 @@
   the server-side evidence mapping and clickable source-type controls.
 - Enlarged the evidence modal and added zoomable, high-resolution PDF and
   Excel-style captures with Korean fonts and source highlighting.
-- Pre-populated all three notebook FEW SHOT cells and set the per-item generation
-  ceiling to 700 tokens.
+- Pre-populated all three notebook FEW SHOT cells and raised the generation
+  ceiling to 1,400 tokens.
 - Serialized the text-only multimodal limit as JSON for current vLLM CLI
   compatibility instead of passing the rejected legacy comma syntax.
+- Added post-review free chat that appears only after the complete A–E stream,
+  omits few shots, retains the completed opinion and accumulated Q&A context,
+  and streams through the same vLLM server.
+- Added automatic continuation on `finish_reason=length` so incomplete responses
+  fail or continue instead of being silently accepted.
+- Restyled the interface as a more angular bank-workstation UI and moved the
+  return-to-opinion control below the composer.
 
 ## 0.22.0 - 2026-08-31
 
