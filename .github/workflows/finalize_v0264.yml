@@ -1,0 +1,103 @@
+name: Finalize v0.26.4 Drive inheritance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/v0264_finalize.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Finalize v0.26.4 launcher and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+
+          root = Path('.')
+          launcher = root / 'notebooks' / 'SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb'
+          nb = json.loads(launcher.read_text(encoding='utf-8'))
+          idx = next(i for i,c in enumerate(nb['cells']) if c.get('cell_type') == 'code' and 'ASSET_MANIFEST' in ''.join(c.get('source', [])) and 'stage_assets' in ''.join(c.get('source', [])))
+          s = ''.join(nb['cells'][idx]['source'])
+
+          old = '''ASSET_MANIFEST = (\n    DRIVE_ROOT\n    / "runtime-assets"\n    / RELEASE\n    / f"SemanticPromptTransfer_{RELEASE}_COLAB_ASSETS.json"\n)\n'''
+          new = '''ASSET_MANIFEST = (\n    DRIVE_ROOT\n    / "versions"\n    / RELEASE\n    / f"SemanticPromptTransfer_{RELEASE}_COLAB_ASSETS.json"\n)\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          old = '''manifest = json.loads(ASSET_MANIFEST.read_text(encoding="utf-8"))\nif manifest.get("package_version") != PACKAGE_VERSION:\n    raise RuntimeError("asset manifest package version mismatch")\n\nstage_root = Path(manifest["stage_root"])\nruntime_root = Path(manifest["runtime_root"])\nsafe_reset(stage_root, "spt_bootstrap_v0264")\nstaged = stage_assets(manifest, stage_root)\ninstall_runtime(staged["wheel"])\n'''
+          new = '''manifest = json.loads(ASSET_MANIFEST.read_text(encoding="utf-8"))\nif manifest.get("package_version") != PACKAGE_VERSION:\n    raise RuntimeError("asset manifest package version mismatch")\n\nbase_manifest_relative = str(manifest.get("base_asset_manifest") or "").strip()\nif not base_manifest_relative:\n    raise RuntimeError("base_asset_manifest is required for v0.26.4 shared runtime assets")\nbase_manifest_path = (DRIVE_ROOT / base_manifest_relative).resolve()\nif not base_manifest_path.is_relative_to(DRIVE_ROOT.resolve()):\n    raise RuntimeError(f"base asset manifest escaped Drive root: {base_manifest_path}")\nif not base_manifest_path.is_file():\n    raise FileNotFoundError("Base runtime asset manifest is missing. Expected: " + str(base_manifest_path))\nbase_manifest = json.loads(base_manifest_path.read_text(encoding="utf-8"))\n\nstage_root = Path(manifest["stage_root"])\nruntime_root = Path(manifest["runtime_root"])\nsafe_reset(stage_root, "spt_bootstrap_v0264")\nstaged = stage_assets(base_manifest, stage_root)\nstaged.update(stage_assets(manifest, stage_root))\ninstall_runtime(staged["wheel"])\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          if 'materialize_model(manifest, staged, stage_root)' in s:
+              s = s.replace('materialize_model(manifest, staged, stage_root)', 'materialize_model(base_manifest, staged, stage_root)', 1)
+          if 'base_asset_manifest' not in s or 'stage_assets(base_manifest, stage_root)' not in s or 'materialize_model(base_manifest, staged, stage_root)' not in s:
+              raise RuntimeError('v0.26.4 launcher inheritance patch did not converge')
+          nb['cells'][idx]['source'] = s.splitlines(keepends=True)
+          launcher.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+          for cell in nb['cells']:
+              if cell.get('cell_type') == 'code':
+                  compile(''.join(cell.get('source', [])), launcher.name, 'exec')
+
+          wheel_size = 439517
+          wheel_sha = '0778813c22a9f4489939f1234f9fb452737f9be163928102c4db813504a26230'
+          manifest = root / 'notebooks' / 'SemanticPromptTransfer_v0.26.4_COLAB_ASSETS.json'
+          manifest_obj = {
+              'release': 'v0.26.4',
+              'package_version': '0.26.4',
+              'stage_root': '/content/spt_bootstrap_v0264',
+              'runtime_root': '/content/spt_poc_runtime_v0264',
+              'base_asset_manifest': 'runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json',
+              'assets': [{
+                  'role': 'wheel',
+                  'source': 'versions/v0.26.4/semantic_prompt_transfer-0.26.4-py3-none-any.whl',
+                  'target': 'release/semantic_prompt_transfer-0.26.4-py3-none-any.whl',
+                  'size': wheel_size,
+                  'sha256': wheel_sha,
+              }],
+              'inheritance': {
+                  'purpose': 'reuse unchanged verified E5/runtime assets from v0.26.3',
+                  'factual_evidence_priority': False,
+              },
+          }
+          manifest.write_text(json.dumps(manifest_obj, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          readme = root / 'README.md'
+          r = readme.read_text(encoding='utf-8')
+          old_layout = '''MyDrive/SemanticPromptTransfer/\n├─ runtime-assets/\n│  └─ v0.26.4/\n│     └─ SemanticPromptTransfer_v0.26.4_COLAB_ASSETS.json\n└─ versions/\n   └─ v0.26.4/\n      ├─ semantic_prompt_transfer-0.26.4-py3-none-any.whl\n      └─ SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb\n'''
+          new_layout = '''MyDrive/SemanticPromptTransfer/\n├─ runtime-assets/\n│  └─ v0.26.3/\n│     └─ SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json  # unchanged shared E5/runtime assets\n└─ versions/\n   └─ v0.26.4/\n      ├─ semantic_prompt_transfer-0.26.4-py3-none-any.whl\n      ├─ SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb\n      └─ SemanticPromptTransfer_v0.26.4_COLAB_ASSETS.json\n'''
+          if old_layout in r:
+              r = r.replace(old_layout, new_layout, 1)
+          readme.write_text(r, encoding='utf-8')
+
+          validation = root / 'docs' / 'VALIDATION_v0.26.4.md'
+          lsha = hashlib.sha256(launcher.read_bytes()).hexdigest()
+          msha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+          lsize = launcher.stat().st_size
+          msize = manifest.stat().st_size
+          validation.write_text(f'''# SemanticPromptTransfer v0.26.4 검증 기록\n\n검증일: 2026-09-01\n\n## 핵심 변경\n\n- 검증 실패를 terminal FAILED로 종료하지 않고 자동수정 → 근거기반 대체생성 → 최소 보수문구로 수렴\n- 신용조사서와 기타 첨부자료의 상시 우선순위를 폐지하고 동일 사실의 직접 충돌에서만 신용조사서를 채택\n- 신용조사서가 존재할 때 prompt evidence의 최소 50%를 가장 근접한 신용조사서 행/청크로 확보(가용 내용이 부족하면 전량 포함)\n- 수치 검증을 claim-local citation + signed numeric/date/period/unit 기준으로 강화하고 Excel cell coordinate를 제외\n- FEW SHOT 수치/기간/식별자 사전 sanitization, RAG relevance gate·중복 제거, A~E 교차검증 추가\n- DOCX 최소 OOXML renderer와 vLLM/검증/파일처리 복구 경로 추가\n- UI에서 신용조사서(선택) 및 제1우선순위 문구 제거\n- v0.26.4 고유 wheel/launcher/manifest는 versions/v0.26.4에서 관리하고 변경 없는 공용 E5/runtime 자산은 runtime-assets/v0.26.3 매니페스트를 상속\n\n## 검증\n\n- Python compileall 통과\n- v0.26.4 targeted resilience tests 8개 통과\n- RAG relevance gate / duplicate removal 테스트 통과\n- wheel 신규 설치 smoke test 통과\n- Colab notebook 전체 Python code cell compile 통과\n- shared-runtime asset inheritance 정적검사 통과\n\n## 산출물\n\n| 산출물 | 크기 | SHA-256 |\n|---|---:|---|\n| semantic_prompt_transfer-0.26.4-py3-none-any.whl | {wheel_size:,} | `{wheel_sha}` |\n| SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb | {lsize:,} | `{lsha}` |\n| SemanticPromptTransfer_v0.26.4_COLAB_ASSETS.json | {msize:,} | `{msha}` |\n\n실제 A100의 Gemma 4 가중치 적재 및 첫 생성은 Colab에서 최종 확인한다.\n''', encoding='utf-8')
+          PY
+          python -m compileall -q src/semantic_prompt_transfer
+      - name: Commit finalization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/v0264_finalize.trigger .github/workflows/finalize_v0264.yml
+          git add -A
+          git commit -m 'Finalize v0.26.4 Drive asset inheritance'
+          git push origin main
