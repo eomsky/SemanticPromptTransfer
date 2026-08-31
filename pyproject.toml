@@ -9,12 +9,31 @@ description = "RAG-ready chunking, CPU embeddings, hybrid retrieval, and evidenc
 readme = "README.md"
 requires-python = ">=3.11"
 license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
 authors = [{name = "SemanticPromptTransfer"}]
+keywords = ["rag", "retrieval", "chunking", "table", "document-ai", "onnx"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing :: Indexing",
+]
 dependencies = [
   "numpy>=1.26,<3.0",
   "onnxruntime>=1.22,<2.0",
   "tokenizers>=0.22,<1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/eomsky/SemanticPromptTransfer"
+Repository = "https://github.com/eomsky/SemanticPromptTransfer"
+Documentation = "https://github.com/eomsky/SemanticPromptTransfer/tree/main/docs"
+Issues = "https://github.com/eomsky/SemanticPromptTransfer/issues"
 
 [project.scripts]
 spt-rag = "semantic_prompt_transfer.cli:main"

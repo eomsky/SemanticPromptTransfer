@@ -21,8 +21,20 @@ v0.19는 Cell 1~3을 실행하거나 재학습하지 않았다. 기존 v0.17 MAS
 | CLI tenant/case 필수 | PASS |
 | wheel 격리 설치·import | PASS |
 | wheel 내부 손상 검사 | PASS |
+| wheel/sdist 독점 LICENSE 포함 | PASS |
+| PyPI Metadata 2.4·프로젝트 URL | PASS |
+| GitHub OIDC 게시 워크플로 | PASS |
+| 게시 실행 조건 | GitHub release published |
 | wheel 내 기본 질의 | 5개 |
 | wheel 내 STX 예제 청크 | 5개 |
+
+## PyPI 게시 준비
+
+패키지명은 `semantic-prompt-transfer`, 버전은 `0.19.0`으로 고정했다. wheel과 sdist에는 `LicenseRef-Proprietary` 메타데이터와 독점 `LICENSE` 원문이 함께 들어간다. 홈페이지·저장소·문서·이슈 URL도 PyPI 메타데이터에 포함했다.
+
+`.github/workflows/publish.yml`은 GitHub Release가 실제로 게시될 때만 실행된다. 워크플로는 Python 3.12에서 표준 빌드, `twine check`, wheel 설치, 7개 단위 테스트를 차례로 통과한 산출물만 PyPI Trusted Publishing(OIDC)으로 전송한다. API 토큰이나 저장소 secret은 사용하지 않는다.
+
+현재 검증 시점에는 PyPI 게시를 실행하지 않았다. 최초 게시 전에 PyPI 계정의 pending publisher에 소유자 `eomsky`, 저장소 `SemanticPromptTransfer`, 워크플로 `publish.yml`, 환경 `pypi`를 연결해야 한다.
 
 ## Cell 1~3 프리징
 

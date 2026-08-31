@@ -23,6 +23,12 @@
     "wheel_contains_5_queries": true,
     "wheel_contains_5_stx_sample_chunks": true,
     "wheel_zip_integrity": true,
+    "wheel_contains_proprietary_license": true,
+    "sdist_contains_proprietary_license": true,
+    "pypi_metadata_version_2_4": true,
+    "pypi_project_urls_present": true,
+    "github_trusted_publishing_workflow_present": true,
+    "github_release_gate_present": true,
     "full_stx_l0_1090_equal": true,
     "stx_sample_top1_5_of_5": true,
     "pdf_visual_qa_7_pages": true,
@@ -75,8 +81,8 @@
     "e5_onnx": "dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88"
   },
   "artifact_hashes": {
-    "wheel": "d306e8424e8440970db20791772cb82ec34d704a3700561eaa7b783ec4bd6c86",
-    "sdist": "57787b19ab44f8c881aec2dd804a4ee4e6f7dfca9fcbf0ae949fa3bd37c9c65a",
+    "wheel": "ab9443c6818d01cb0d451e6f60f23473199041d07c274760820cf57312064bc9",
+    "sdist": "80a9791e14f07a9089365be2d0c53061a9bc420afcc3df50670ede85e05efc17",
     "requirements_pdf": "1dc3504baabe85670e45b416be55222808b983be9e634aec436da8edec750d79",
     "requirements_docx": "48f4271e782f9706ad149296946d28d59652ce9caca09107e2f328d9a4b38714",
     "requirements_md": "cca367ceab3174cbabb1bd47cd069ad4474d63e6974746b21d153d9be5b58ce3"
@@ -102,6 +108,17 @@
     "model/index load once",
     "traceable retrieval fields"
   ],
+  "pypi_readiness": {
+    "project_name": "semantic-prompt-transfer",
+    "version": "0.19.0",
+    "license_expression": "LicenseRef-Proprietary",
+    "license_file_included": true,
+    "publisher": "GitHub Actions Trusted Publishing (OIDC)",
+    "workflow": ".github/workflows/publish.yml",
+    "workflow_trigger": "GitHub release published",
+    "pypi_publish_executed": false,
+    "remaining_external_step": "Create the pending trusted publisher on PyPI before publishing the first GitHub release"
+  },
   "operational_controls_next": [
     "API authentication and authorization",
     "encryption and retention/delete API",
