@@ -1,0 +1,48 @@
+name: Apply v0.26.4 release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/v0264_payload.part*'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply verified release payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/v0264_payload.part* | base64 -d > /tmp/v0264.zip
+          unzip -q /tmp/v0264.zip -d /tmp/v0264
+          python /tmp/v0264/spt0264_payload/apply.py "$GITHUB_WORKSPACE"
+          python -m compileall -q src/semantic_prompt_transfer
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('notebooks/SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb')
+          nb=json.loads(p.read_text(encoding='utf-8'))
+          for cell in nb['cells']:
+              if cell.get('cell_type')=='code':
+                  compile(''.join(cell.get('source',[])), p.name, 'exec')
+          print('v0.26.4 source and notebook compile checks passed')
+          PY
+      - name: Commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Release v0.26.4 non-failing grounded generation'
+          git push origin main
