@@ -1,0 +1,94 @@
+{
+  "schema_version": "release-readiness-1.0",
+  "project": "SemanticPromptTransfer",
+  "updated_at": "2026-08-31",
+  "drive_root": "MyDrive/SemanticPromptTransfer",
+  "package_baseline": {
+    "version": "0.20.0",
+    "representation_default": 0,
+    "package_scope": "Cells 4-7 plus operational credit-review layer",
+    "master_contract": "Cells 1-3 frozen; validated MASTER JSON is external input",
+    "index_backends": [
+      "NPZ exact-search reference backend",
+      "InMemoryVectorStore conformance backend",
+      "optional ChromaVectorStore adapter"
+    ],
+    "github_repository": "https://github.com/eomsky/SemanticPromptTransfer",
+    "github_commit": "b0e5f7715a090f84c40c574bcefe34880bab486d",
+    "pypi_published": false,
+    "license_expression": "LicenseRef-Proprietary"
+  },
+  "next_development_line": "v0.21",
+  "operational_requirements_v020": {
+    "status": "reference_implementation_and_package_validated",
+    "fixed_review_items": [
+      "A_FINANCIAL_STATEMENT_MAJOR_ACCOUNTS",
+      "B_PROFITABILITY",
+      "C_FINANCIAL_STABILITY_AND_ASSET_QUALITY",
+      "D_CASH_FLOW_AND_DEBT_SERVICE_CAPACITY",
+      "E_MAJOR_CUSTOMERS_AND_SALES_MIX_TREND"
+    ],
+    "evidence_priority": [
+      "TIER_1_CREDIT_REPORT_ITEM_SPECIFIC",
+      "TIER_2_CREDIT_REPORT_COMMON",
+      "TIER_3_OTHER_ATTACHMENTS"
+    ],
+    "few_shot_policy": "Approved style-only examples selected by review item, loan type, industry classification and situation tags; never current-case evidence",
+    "implemented_components": [
+      "credit_report_excel_parser_and_canonical_facts",
+      "five_item_query_profiles",
+      "few_shot_registry_selector_and_leakage_validation",
+      "global_chunk_and_evidence_ids",
+      "document_registry_and_delete_lifecycle",
+      "provider_neutral_generation_orchestration_and_progress",
+      "tiered_prompt_and_numeric_source_validation",
+      "five_item_docx_renderer",
+      "optional_chroma_adapter"
+    ]
+  },
+  "packaging_policy": {
+    "package_every_version": false,
+    "keep_release_metadata_every_version": true,
+    "github_and_pypi_require_explicit_decision": true,
+    "preserve_previous_drive_versions": true
+  },
+  "pending_package_changes": {
+    "public_api_changes": [],
+    "cli_changes": [],
+    "dependency_changes": [],
+    "configuration_changes": [],
+    "schema_changes": [],
+    "index_migrations": [],
+    "encoder_compatibility": [
+      "Continue validating model_id, model_sha256 and embedding dimension before index access"
+    ],
+    "breaking_changes": [],
+    "deprecations": [],
+    "security_and_privacy_review": [
+      "Keep original PDFs, full MASTER files, trained models and operational indexes outside public distributions",
+      "Retain tenant_id and case_id as mandatory online filters",
+      "Define bank authentication, retention, deletion and audit controls"
+    ],
+    "license_status": "LicenseRef-Proprietary retained; explicit decision required before PyPI publication",
+    "production_integration_blockers": [
+      "Approve actual credit-report Excel mapping",
+      "Approve anonymized few-shot assets and effective-date policy",
+      "Connect HTML/API, object storage, malware scanning and distributed task queue",
+      "Load-test an approved production Vector DB",
+      "Connect and evaluate the internal LLM",
+      "Define bank-specific cross-item consistency rules",
+      "Apply the official opinion Word template",
+      "Finalize retention, deletion and audit policy"
+    ]
+  },
+  "last_validated_baseline": {
+    "unit_tests": "15/15 passed",
+    "real_e5_operational_smoke": "2 documents in one index, 5 review items, document-scoped deletion passed",
+    "stx_l0_equivalence": "1090/1090 chunks identical to v0.19",
+    "isolated_package_install": "wheel import and CLI passed",
+    "document_visual_qa": "requirements PDF 5 pages, DOCX 8 pages, smoke opinion DOCX 2 pages",
+    "limitations": "Smoke data and stub LLM validate the execution contract, not production opinion quality"
+  },
+  "release_candidate": true,
+  "next_review_trigger": "Re-evaluate when actual bank templates, approved few shots, production Vector DB or internal LLM are connected"
+}
