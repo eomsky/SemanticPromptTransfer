@@ -192,7 +192,7 @@ vllm_process = subprocess.Popen(
         "--max-num-batched-tokens", "8192",
         "--enable-prefix-caching",
         "--async-scheduling",
-        "--limit-mm-per-prompt", "image=0,audio=0",
+        "--limit-mm-per-prompt", json.dumps({"image": 0, "audio": 0}, separators=(",", ":")),
     ],
     stdout=vllm_log_handle,
     stderr=subprocess.STDOUT,

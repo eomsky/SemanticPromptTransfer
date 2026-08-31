@@ -16,6 +16,8 @@
   Excel-style captures with Korean fonts and source highlighting.
 - Pre-populated all three notebook FEW SHOT cells and set the per-item generation
   ceiling to 700 tokens.
+- Serialized the text-only multimodal limit as JSON for current vLLM CLI
+  compatibility instead of passing the rejected legacy comma syntax.
 
 ## 0.22.0 - 2026-08-31
 

@@ -100,7 +100,11 @@ class ColabPocTests(unittest.TestCase):
         self.assertIn('"--pre"', code)
         self.assertIn('"--max-num-seqs", "4"', code)
         self.assertIn('"--async-scheduling"', code)
-        self.assertIn('"--limit-mm-per-prompt", "image=0,audio=0"', code)
+        self.assertIn(
+            '"--limit-mm-per-prompt", json.dumps({"image": 0, "audio": 0}',
+            code,
+        )
+        self.assertNotIn('"image=0,audio=0"', code)
         self.assertIn("E5GpuEncoder", code)
         self.assertIn("anonymous_access=True", code)
         self.assertIn("NGROK_AUTHTOKEN", code)

@@ -21,7 +21,7 @@
 | 산출물 | 크기 | SHA-256 |
 |---|---:|---|
 | `semantic_prompt_transfer-0.25.0-py3-none-any.whl` | 171,834 | `01f76379388d237e2e9d577c57555e9939fee684ffebe6861d101de55dcaeaba` |
-| `SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb` | 42,645 | `2d7c8873292aca94de614dd2854cd3f5c6e2351a4fee2d5ae4434dd436012437` |
+| `SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb` | 42,693 | `aba0b70c50a722c47d80284edd50a849b962db645feb7dd3322cc08bef227b83` |
 | `few_shot_defaults_v1.json` | 18,439 | `846f2b7a301491948223b964d9926176a0ee49a19f05a9f2f9c427fdc234e01d` |
 
 ## Colab에서 확인할 항목
