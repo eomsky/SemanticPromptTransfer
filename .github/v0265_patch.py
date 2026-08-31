@@ -1,0 +1,284 @@
+from __future__ import annotations
+
+from pathlib import Path
+import json
+import re
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{path}: expected one occurrence, found {count}: {old[:100]!r}")
+    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+Path("src/semantic_prompt_transfer/version.py").write_text(
+    '"""Single runtime version source used by APIs, health checks, and exports."""\n\nPACKAGE_VERSION = "0.26.5"\n__version__ = PACKAGE_VERSION\n',
+    encoding="utf-8",
+)
+replace_once("pyproject.toml", 'version = "0.26.4"', 'version = "0.26.5"')
+replace_once(
+    "src/semantic_prompt_transfer/application.py",
+    '            "status": document.status.value,\n            "can_delete": document.status not in {FileStatus.DELETING, FileStatus.DELETED},\n',
+    '            "status": document.status.value,\n            "is_demo": document.document_id.startswith("demo-"),\n            "can_delete": document.status not in {FileStatus.DELETING, FileStatus.DELETED},\n',
+)
+
+# Web API: lazy per-case seed, no parser/encoder call, and scoped original-file download.
+replace_once(
+    "src/semantic_prompt_transfer/web.py",
+    "import json\nimport uuid\nfrom collections.abc import Iterator\n",
+    "import json\nimport threading\nimport uuid\nfrom collections.abc import Iterator\n",
+)
+replace_once(
+    "src/semantic_prompt_transfer/web.py",
+    "    download_root: str | Path | None = None,\n    credit_template_download: str | Path | None = None,\n):\n",
+    "    download_root: str | Path | None = None,\n    credit_template_download: str | Path | None = None,\n    demo_credit_report_path: str | Path | None = None,\n    demo_attachment_paths: Sequence[str | Path] = (),\n):\n",
+)
+replace_once(
+    "src/semantic_prompt_transfer/web.py",
+    '    template_download = (\n        Path(credit_template_download).expanduser().resolve()\n        if credit_template_download\n        else None\n    )\n    app = FastAPI(title="SemanticPromptTransfer Colab POC API", version=PACKAGE_VERSION)\n',
+    '''    template_download = (\n        Path(credit_template_download).expanduser().resolve()\n        if credit_template_download\n        else None\n    )\n    demo_credit = (\n        Path(demo_credit_report_path).expanduser().resolve()\n        if demo_credit_report_path\n        else None\n    )\n    demo_attachments = tuple(\n        Path(value).expanduser().resolve() for value in demo_attachment_paths\n    )\n    demo_specs: list[tuple[DocumentKind, Path]] = []\n    if demo_credit is not None:\n        demo_specs.append((DocumentKind.CREDIT_REPORT, demo_credit))\n    demo_specs.extend((DocumentKind.ATTACHMENT, path) for path in demo_attachments)\n    for _, source in demo_specs:\n        if not source.is_file():\n            raise FileNotFoundError(f"demo source is missing: {source}")\n    demo_seed_lock = threading.RLock()\n    demo_seeded_cases: set[tuple[str, str]] = set()\n    app = FastAPI(title="SemanticPromptTransfer Colab POC API", version=PACKAGE_VERSION)\n''',
+)
+replace_once(
+    "src/semantic_prompt_transfer/web.py",
+    "        return session.tenant_id, session.case_id, session\n\n    def process_upload(\n",
+    '''        return session.tenant_id, session.case_id, session\n\n    def ensure_demo_seeded(tenant_id: str, case_id: str) -> list[dict[str, Any]]:\n        if not demo_specs:\n            return []\n        key = (tenant_id, case_id)\n        with demo_seed_lock:\n            if key in demo_seeded_cases:\n                return []\n            if application.registry.list_documents(tenant_id, case_id):\n                demo_seeded_cases.add(key)\n                return []\n            seeded: list[dict[str, Any]] = []\n            for document_kind, source in demo_specs:\n                payload = source.read_bytes()\n                document_id = f"demo-{document_kind.value}-{uuid.uuid4().hex}"\n                scope = DocumentScope(tenant_id, case_id, document_id)\n                stored = storage.put(scope, source.name, payload)\n                try:\n                    seeded.append(\n                        application.register_upload(\n                            scope,\n                            filename=source.name,\n                            document_kind=document_kind,\n                            size_bytes=len(payload),\n                            storage_uri=str(stored),\n                            source_hash=hashlib.sha256(payload).hexdigest(),\n                            derived_uri=str(storage.derived_path(scope)),\n                        )\n                    )\n                except Exception:\n                    stored.unlink(missing_ok=True)\n                    raise\n            demo_seeded_cases.add(key)\n            return seeded\n\n    def process_upload(\n''',
+)
+replace_once(
+    "src/semantic_prompt_transfer/web.py",
+    '''    @app.get("/api/v1/cases/{case_id}/documents")\n    def list_documents(\n        case_id: str,\n        tenant_id: str | None = Query(None),\n        x_poc_token: str | None = Header(None),\n    ):\n        tenant, case, _ = authorize(\n            x_poc_token, tenant_id=tenant_id, case_id=case_id\n        )\n        return application.list_uploads(tenant, case)\n\n    @app.delete("/api/v1/cases/{case_id}/documents/{document_id}")\n''',
+    '''    @app.get("/api/v1/cases/{case_id}/documents")\n    def list_documents(\n        case_id: str,\n        tenant_id: str | None = Query(None),\n        x_poc_token: str | None = Header(None),\n    ):\n        tenant, case, _ = authorize(\n            x_poc_token, tenant_id=tenant_id, case_id=case_id\n        )\n        ensure_demo_seeded(tenant, case)\n        return application.list_uploads(tenant, case)\n\n    @app.get("/api/v1/cases/{case_id}/documents/{document_id}/download")\n    def download_document(\n        case_id: str,\n        document_id: str,\n        tenant_id: str | None = Query(None),\n        x_poc_token: str | None = Header(None),\n    ):\n        tenant, case, _ = authorize(\n            x_poc_token, tenant_id=tenant_id, case_id=case_id\n        )\n        try:\n            document = application.registry.get_document(tenant, case, document_id)\n        except KeyError as exc:\n            raise HTTPException(status_code=404, detail="document not found") from exc\n        if document.status is FileStatus.DELETED or not document.storage_uri:\n            raise HTTPException(status_code=404, detail="document not found")\n        source = Path(document.storage_uri).expanduser().resolve()\n        if not source.is_relative_to(storage.root):\n            raise HTTPException(status_code=409, detail="document path escaped runtime storage")\n        if not source.is_file():\n            raise HTTPException(status_code=404, detail="document file is missing")\n        return FileResponse(source, filename=document.filename)\n\n    @app.delete("/api/v1/cases/{case_id}/documents/{document_id}")\n''',
+)
+
+# Bootstrap wires owner-Drive demo originals into the read-only seed source.
+replace_once(
+    "src/semantic_prompt_transfer/poc_bootstrap.py",
+    "    credit_template_path: str | Path | None = None,\n    few_shot_path: str | Path | None = None,\n    allowed_origins: tuple[str, ...] = (),\n",
+    "    credit_template_path: str | Path | None = None,\n    few_shot_path: str | Path | None = None,\n    demo_credit_report_path: str | Path | None = None,\n    demo_attachment_paths: tuple[str | Path, ...] = (),\n    allowed_origins: tuple[str, ...] = (),\n",
+)
+replace_once(
+    "src/semantic_prompt_transfer/poc_bootstrap.py",
+    '            credit_template_download=_example_path("credit_report_sample_template.xlsx"),\n        )\n',
+    '            credit_template_download=_example_path("credit_report_sample_template.xlsx"),\n            demo_credit_report_path=demo_credit_report_path,\n            demo_attachment_paths=demo_attachment_paths,\n        )\n',
+)
+replace_once(
+    "src/semantic_prompt_transfer/poc_bootstrap.py",
+    '    origins = tuple(\n        value.strip()\n        for value in os.environ.get("SPT_ALLOWED_ORIGINS", "").split(",")\n        if value.strip()\n    )\n    return build_colab_poc(\n',
+    '''    origins = tuple(\n        value.strip()\n        for value in os.environ.get("SPT_ALLOWED_ORIGINS", "").split(",")\n        if value.strip()\n    )\n    demo_attachments = tuple(\n        value.strip()\n        for value in os.environ.get("SPT_DEMO_ATTACHMENTS", "").split(",")\n        if value.strip()\n    )\n    return build_colab_poc(\n''',
+)
+replace_once(
+    "src/semantic_prompt_transfer/poc_bootstrap.py",
+    '        few_shot_path=os.environ.get("SPT_FEW_SHOTS"),\n        allowed_origins=origins,\n',
+    '        few_shot_path=os.environ.get("SPT_FEW_SHOTS"),\n        demo_credit_report_path=os.environ.get("SPT_DEMO_CREDIT_REPORT"),\n        demo_attachment_paths=demo_attachments,\n        allowed_origins=origins,\n',
+)
+
+# HTML/UI modifications.
+html = Path("src/semantic_prompt_transfer/examples/operational/credit_review_upload_demo.html")
+text = html.read_text(encoding="utf-8")
+replacements = [
+    (
+        ".file-chip-name { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+        ".file-chip-name { min-width:0; max-width:240px; height:auto; padding:0; overflow:hidden; border:0; background:transparent; color:var(--navy); text-decoration:underline; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }\n    .file-chip-name:hover { color:#173b62; }\n    .preprocess-note { padding:10px 12px; border:1px solid #d8e5f3; border-radius:2px; background:#f2f7fc; color:#45576b; font-size:12px; line-height:1.55; }",
+    ),
+    (
+        '<div class="label"><strong>신용조사서</strong></div>',
+        '<div class="label"><strong>신용조사서</strong><small>엑셀 파일 0~1개</small></div>',
+    ),
+    (
+        '<div class="progress-wrap"><div class="status"><div class="track"><div class="bar" id="reportBar"></div></div><span id="reportText">0%</span></div><div class="current-stage" id="currentStage">업로드 대기 중</div></div>',
+        '<div><div class="preprocess-note" id="preprocessNote" hidden></div><div class="progress-wrap" id="progressWrap" hidden><div class="status"><div class="track"><div class="bar" id="reportBar"></div></div><span id="reportText">0%</span></div><div class="current-stage" id="currentStage">업로드 대기 중</div></div></div>',
+    ),
+    (
+        "const stageLabel=file=>file.stage==='업로드 완료'?file.stage:`${file.stage||'처리 중'} (${file.progress}%)`;",
+        "const stageLabel=file=>file.status==='UPLOADED'?'업로드 완료 · 임베딩 대기':file.stage==='업로드 완료'?file.stage:`${file.stage||'처리 중'} (${file.progress}%)`;",
+    ),
+    (
+        'const inlineFiles=(files,key)=>files.length?files.map(file=>`<span class="file-chip" title="${escapeHtml(file.name)} · ${sizeOf(file.size)}"><span class="file-chip-name">${escapeHtml(file.name)}</span><span class="file-chip-stage">${escapeHtml(stageLabel(file))}</span><button class="file-x" type="button" aria-label="${escapeHtml(file.name)} 삭제" onclick="deleteItem(\'${key}\',\'${file.id}\')">×</button></span>`).join(\'\'):\'<span class="inline-empty">업로드된 파일 없음</span>\';',
+        'const inlineFiles=(files,key)=>files.length?files.map(file=>`<span class="file-chip" title="${escapeHtml(file.name)} · ${sizeOf(file.size)}"><button class="file-chip-name" type="button" aria-label="${escapeHtml(file.name)} 다운로드" onclick="downloadItem(\'${file.id}\')">${escapeHtml(file.name)}</button><span class="file-chip-stage">${escapeHtml(stageLabel(file))}</span><button class="file-x" type="button" aria-label="${escapeHtml(file.name)} 삭제" onclick="deleteItem(\'${key}\',\'${file.id}\')">×</button></span>`).join(\'\'):\'<span class="inline-empty">업로드된 파일 없음</span>\';',
+    ),
+    (
+        "const syncMainProgress=()=>{generateButton.disabled=!(state.credit.length||state.attachments.length)||Boolean(state.jobId&&!state.complete);downloadButton.disabled=!(state.jobId&&state.complete);renderFileLists();};",
+        "const syncPreprocess=()=>{const files=[...state.credit,...state.attachments],note=byId('preprocessNote'),progress=byId('progressWrap');if(state.jobId){note.hidden=true;progress.hidden=false;return;}progress.hidden=true;if(!files.length){note.hidden=true;return;}const demo=files.some(file=>file.isDemo);note.hidden=false;note.textContent=demo?'현재 상태: 샘플 파일이 미리 업로드되어 있습니다. 심사의견 생성 버튼을 누르면 자료 해석 및 벡터 임베딩이 시작됩니다.':'현재 상태: 업로드가 완료되었으며 아직 분석·벡터 임베딩 전입니다. 심사의견 생성 버튼을 누르면 처리가 시작됩니다.';};\n    const syncMainProgress=()=>{generateButton.disabled=!(state.credit.length||state.attachments.length)||Boolean(state.jobId&&!state.complete);downloadButton.disabled=!(state.jobId&&state.complete);renderFileLists();syncPreprocess();};",
+    ),
+    (
+        "const convertUpload=row=>({id:row.document_id,name:row.filename,size:row.size_bytes||0,progress:row.progress_percent||0,stage:row.progress_stage||'업로드 완료'});",
+        "const convertUpload=row=>({id:row.document_id,name:row.filename,size:row.size_bytes||0,progress:row.progress_percent||0,stage:row.progress_stage||'업로드 완료',status:row.status||'UPLOADED',isDemo:Boolean(row.is_demo)});",
+    ),
+    (
+        "window.deleteItem=async(key,id)=>{if(!confirm('서버에 적재된 파일과 해당 파일의 임베딩 벡터를 모두 삭제합니다.'))return;",
+        "window.downloadItem=async id=>{const file=[...state.credit,...state.attachments].find(row=>row.id===id);if(!file)return;if(!apiMode){alert('실행 서버에서 업로드된 파일을 다운로드할 수 있습니다.');return;}const response=await apiFetch(`/api/v1/cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(id)}/download?tenant_id=${encodeURIComponent(tenantId)}`);if(!response.ok){alert(`파일 다운로드 실패 (${response.status})`);return;}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=file.name;link.click();URL.revokeObjectURL(url);};\n    window.deleteItem=async(key,id)=>{if(!confirm('파일을 삭제합니다. 이미 처리된 임베딩이 있으면 함께 삭제됩니다.'))return;",
+    ),
+    (
+        "generateButton.addEventListener('click',async()=>{state.sections={};state.lastSequence=0;state.complete=false;state.chatBusy=false;",
+        "generateButton.addEventListener('click',async()=>{state.sections={};state.lastSequence=0;state.complete=false;state.chatBusy=false;byId('preprocessNote').hidden=true;byId('progressWrap').hidden=false;",
+    ),
+]
+for old, new in replacements:
+    if text.count(old) != 1:
+        raise RuntimeError(f"HTML replacement anchor mismatch: {old[:80]!r} -> {text.count(old)}")
+    text = text.replace(old, new, 1)
+html.write_text(text, encoding="utf-8")
+
+# Generate v0.26.5 notebook from v0.26.4.
+source = Path("notebooks/SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb")
+notebook = json.loads(source.read_text(encoding="utf-8"))
+for cell in notebook["cells"]:
+    cell["source"] = [
+        line.replace("v0.26.4", "v0.26.5")
+        .replace("0.26.4", "0.26.5")
+        .replace("spt_bootstrap_v0264", "spt_bootstrap_v0265")
+        for line in cell.get("source", [])
+    ]
+notebook["cells"][0]["source"].extend([
+    "\n",
+    "v0.26.5는 각 익명 테스트 세션에 ABC기업 신용조사서와 사업보고서를 UPLOADED 상태로 최초 1회 복제합니다. 파일명 클릭 다운로드와 × 삭제가 가능하며, 심사의견 생성 전에는 파싱·벡터 임베딩을 수행하지 않습니다.\n",
+])
+setup = "".join(notebook["cells"][1]["source"])
+replace = 'PORT = 8000\n'
+insert = 'PORT = 8000\nDEMO_ROOT = DRIVE_ROOT / "demo-assets"\nDEMO_CREDIT_REPORT = DEMO_ROOT / "신용조사서_ABC기업_v1.0.xlsx"\nDEMO_ATTACHMENTS = (DEMO_ROOT / "[ABC기업]사업보고서(2026.03.23).pdf",)\n'
+if setup.count(replace) != 1:
+    raise RuntimeError("notebook PORT anchor mismatch")
+setup = setup.replace(replace, insert, 1)
+replace = 'if manifest.get("package_version") != PACKAGE_VERSION:\n    raise RuntimeError("asset manifest package version mismatch")\n\n'
+insert = replace + 'for demo_path in (DEMO_CREDIT_REPORT, *DEMO_ATTACHMENTS):\n    if not demo_path.is_file():\n        raise FileNotFoundError(f"demo asset is missing: {demo_path}")\nlog("ABC기업 demo assets ready · deferred processing")\n\n'
+if setup.count(replace) != 1:
+    raise RuntimeError("notebook manifest anchor mismatch")
+setup = setup.replace(replace, insert, 1)
+notebook["cells"][1]["source"] = setup.splitlines(keepends=True)
+patched = False
+for cell in notebook["cells"]:
+    code = "".join(cell.get("source", []))
+    anchor = '        generator=local_generator,\n        anonymous_access=True,\n'
+    if anchor in code:
+        code = code.replace(
+            anchor,
+            '        generator=local_generator,\n        demo_credit_report_path=DEMO_CREDIT_REPORT,\n        demo_attachment_paths=DEMO_ATTACHMENTS,\n        anonymous_access=True,\n',
+            1,
+        )
+        cell["source"] = code.splitlines(keepends=True)
+        patched = True
+if not patched:
+    raise RuntimeError("notebook build_colab_poc anchor missing")
+target = Path("notebooks/SemanticPromptTransfer_v0.26.5_COLAB_LAUNCHER.ipynb")
+notebook.setdefault("metadata", {}).setdefault("colab", {})["name"] = target.name
+target.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
+# New targeted tests.
+Path("tests/test_v0265_demo.py").write_text(r'''from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from semantic_prompt_transfer.colab_runtime import EphemeralColabConfig, EphemeralColabRuntime
+from semantic_prompt_transfer.web import create_fastapi_app
+
+
+class NeverProcess:
+    def __init__(self):
+        self.calls = 0
+
+    def process(self, scope, source_path, document_kind, progress):
+        self.calls += 1
+        raise AssertionError("demo seeding must not parse or embed")
+
+
+def test_demo_files_seed_once_are_downloadable_and_remain_unprocessed():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        runtime = EphemeralColabRuntime(EphemeralColabConfig(root=root / "runtime", require_content_root=False, clean_start=True))
+        credit = root / "신용조사서_ABC기업_v1.0.xlsx"
+        report = root / "[ABC기업]사업보고서(2026.03.23).pdf"
+        credit_bytes = b"demo-xlsx-bytes"
+        report_bytes = b"%PDF-1.4 demo-pdf-bytes"
+        credit.write_bytes(credit_bytes)
+        report.write_bytes(report_bytes)
+        processor = NeverProcess()
+        app = create_fastapi_app(
+            runtime.application,
+            runtime.artifacts,
+            processor,
+            session_manager=None,
+            demo_credit_report_path=credit,
+            demo_attachment_paths=(report,),
+        )
+        client = TestClient(app)
+        response = client.get("/api/v1/cases/case-demo/documents", params={"tenant_id": "poc-demo"})
+        assert response.status_code == 200
+        payload = response.json()
+        assert len(payload["credit_report"]) == 1
+        assert len(payload["attachments"]) == 1
+        rows = payload["credit_report"] + payload["attachments"]
+        assert all(row["status"] == "UPLOADED" for row in rows)
+        assert all(row["progress_percent"] == 0 for row in rows)
+        assert all(row["is_demo"] is True for row in rows)
+        assert processor.calls == 0
+        assert runtime.vectors.count() == 0
+        credit_row = payload["credit_report"][0]
+        downloaded = client.get(
+            f"/api/v1/cases/case-demo/documents/{credit_row['document_id']}/download",
+            params={"tenant_id": "poc-demo"},
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.content == credit_bytes
+        deleted = client.delete(
+            f"/api/v1/cases/case-demo/documents/{credit_row['document_id']}",
+            params={"tenant_id": "poc-demo"},
+        )
+        assert deleted.status_code == 200
+        after = client.get("/api/v1/cases/case-demo/documents", params={"tenant_id": "poc-demo"}).json()
+        assert after["credit_report"] == []
+        assert len(after["attachments"]) == 1
+        assert processor.calls == 0
+        assert runtime.vectors.count() == 0
+        runtime.close(purge=True)
+
+
+def test_v0265_notebook_declares_deferred_demo_assets():
+    import json
+    notebook_path = Path(__file__).resolve().parents[1] / "notebooks" / "SemanticPromptTransfer_v0.26.5_COLAB_LAUNCHER.ipynb"
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    code = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"] if cell.get("cell_type") == "code")
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") == "code":
+            compile("".join(cell.get("source", [])), notebook_path.name, "exec")
+    assert 'RELEASE = "v0.26.5"' in code
+    assert 'PACKAGE_VERSION = "0.26.5"' in code
+    assert '신용조사서_ABC기업_v1.0.xlsx' in code
+    assert '[ABC기업]사업보고서(2026.03.23).pdf' in code
+    assert 'demo_credit_report_path=DEMO_CREDIT_REPORT' in code
+    assert 'demo_attachment_paths=DEMO_ATTACHMENTS' in code
+''', encoding="utf-8")
+
+# Existing version assertion.
+p = Path("tests/test_package.py")
+t = p.read_text(encoding="utf-8")
+t, count = re.subn(
+    r'def test_runtime_version_is_v\d+\(self\):\n\s+self\.assertEqual\(__version__, "[^"]+"\)',
+    'def test_runtime_version_is_v0265(self):\n        self.assertEqual(__version__, "0.26.5")',
+    t,
+    count=1,
+)
+if count != 1:
+    raise RuntimeError("version test anchor missing")
+p.write_text(t, encoding="utf-8")
+
+# README / changelog.
+p = Path("README.md")
+t = p.read_text(encoding="utf-8").replace("v0.26.4", "v0.26.5").replace("0.26.4", "0.26.5")
+marker = "## POC flow\n"
+note = "## v0.26.5 demo-ready start\n\nEach new anonymous browser case receives ephemeral copies of `신용조사서_ABC기업_v1.0.xlsx` and `[ABC기업]사업보고서(2026.03.23).pdf` from the owner Drive `demo-assets` folder. They remain `UPLOADED` with zero vectors until **심사의견 생성** is clicked. Filenames download the case-owned copy; `×` deletes it without touching the Drive original, and a deleted sample is not re-seeded into the same case.\n\n"
+if marker in t:
+    t = t.replace(marker, note + marker, 1)
+p.write_text(t, encoding="utf-8")
+
+p = Path("CHANGELOG.md")
+t = p.read_text(encoding="utf-8")
+entry = "## 0.26.5 - 2026-09-01\n\n- Added per-anonymous-case preload of ABC기업 credit-report and business-report demo files from owner Drive.\n- Demo files remain UPLOADED with zero vectors until review generation starts; no parsing or embedding occurs on page load.\n- Added scope-bound source-file download by clicking the displayed filename.\n- Deleting a demo copy does not delete the Drive original and does not re-seed the same case after refresh.\n- Kept the one-time STX→ABC PDF anonymization outside application and repository code.\n\n"
+if entry not in t:
+    t = t.replace("# Changelog\n\n", "# Changelog\n\n" + entry, 1)
+p.write_text(t, encoding="utf-8")
+Path("src/semantic_prompt_transfer/examples/operational/__init__.py").write_text('"""Operational v0.26.5 examples."""\n', encoding="utf-8")
