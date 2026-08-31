@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.3 - 2026-08-31
+
+- Installed Ninja explicitly inside the isolated vLLM environment so the
+  native Gemma 4 warm-up can compile generated kernels.
+- Prepended the isolated environment's `bin` directory to the vLLM process
+  `PATH`, allowing PyTorch and vLLM child processes to resolve that exact Ninja
+  executable without mutating the Colab kernel environment.
+- Added a Ninja version preflight before model startup, turning a late failure
+  after weight loading and CUDA-graph capture into an immediate actionable
+  dependency error.
+- Preserved v0.26.2 artifacts unchanged and published separate v0.26.3 assets.
+
 ## 0.26.2 - 2026-08-31
 
 - Forced Gemma 4 MoE to use the native vLLM model implementation instead of

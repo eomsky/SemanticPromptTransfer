@@ -169,7 +169,32 @@ class ColabPocTests(unittest.TestCase):
         self.assertIn('"--max-model-len", "16384"', code)
         self.assertIn('"--max-num-seqs", "4"', code)
 
-    def test_v025_v026_v0261_and_v0262_assets_are_versioned_independently(self):
+    def test_v0263_installs_isolated_ninja_and_exports_its_path(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.26.3_COLAB_LAUNCHER.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+        for cell in notebook["cells"]:
+            if cell.get("cell_type") == "code":
+                compile("".join(cell.get("source", [])), notebook_path.name, "exec")
+        self.assertIn('RELEASE = "v0.26.3"', code)
+        self.assertIn('PACKAGE_VERSION = "0.26.3"', code)
+        self.assertIn('"protobuf", "ninja"', code)
+        self.assertIn('ninja_executable = vllm_env / "bin" / "ninja"', code)
+        self.assertIn('[str(ninja_executable), "--version"]', code)
+        self.assertIn('vllm_process_env["PATH"]', code)
+        self.assertIn('str(vllm_env / "bin")', code)
+        self.assertIn('env=vllm_process_env', code)
+        self.assertLess(
+            code.index('vLLM build tool ready · ninja'),
+            code.index('loading native vLLM'),
+        )
+
+    def test_v025_through_v0263_assets_are_versioned_independently(self):
         root = Path(__file__).resolve().parents[1] / "notebooks"
         v025 = json.loads(
             (root / "SemanticPromptTransfer_v0.25_COLAB_ASSETS.json").read_text(
@@ -191,6 +216,11 @@ class ColabPocTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        v0263 = json.loads(
+            (root / "SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual((v025["release"], v025["package_version"]), ("v0.25", "0.25.0"))
         self.assertEqual((v026["release"], v026["package_version"]), ("v0.26", "0.26.0"))
         self.assertEqual(
@@ -201,6 +231,10 @@ class ColabPocTests(unittest.TestCase):
             (v0262["release"], v0262["package_version"]),
             ("v0.26.2", "0.26.2"),
         )
+        self.assertEqual(
+            (v0263["release"], v0263["package_version"]),
+            ("v0.26.3", "0.26.3"),
+        )
         self.assertTrue(v025["assets"][0]["source"].startswith("versions/v0.25/"))
         self.assertTrue(v026["assets"][0]["source"].startswith("versions/v0.26/"))
         self.assertTrue(
@@ -209,9 +243,13 @@ class ColabPocTests(unittest.TestCase):
         self.assertTrue(
             v0262["assets"][0]["source"].startswith("versions/v0.26.2/")
         )
+        self.assertTrue(
+            v0263["assets"][0]["source"].startswith("versions/v0.26.3/")
+        )
         self.assertNotEqual(v025["assets"][0]["sha256"], v026["assets"][0]["sha256"])
         self.assertNotEqual(v026["assets"][0]["sha256"], v0261["assets"][0]["sha256"])
         self.assertNotEqual(v0261["assets"][0]["sha256"], v0262["assets"][0]["sha256"])
+        self.assertNotEqual(v0262["assets"][0]["sha256"], v0263["assets"][0]["sha256"])
 
     def test_one_click_colab_notebook_has_single_executable_cell(self):
         root = Path(__file__).resolve().parents[1]
