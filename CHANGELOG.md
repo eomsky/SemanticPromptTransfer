@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.4 - 2026-09-01
+
+- Replaced terminal validation failures with a non-failing grounded repair/fallback pipeline.
+- Removed standing credit-report evidence priority; credit-report values win only on direct same-fact conflicts.
+- Added a 50% minimum credit-report context representation constraint using the closest credit-report rows/chunks when available.
+- Added claim-local typed numeric validation, FEW SHOT sanitization, RAG relevance/dedup gates, cross-section checks, and minimal DOCX fallback.
+- Updated the upload UI to label the source simply as `신용조사서` with no first-priority text.
+
 ## 0.26.3 - 2026-08-31
 
 - Installed Ninja explicitly inside the isolated vLLM environment so the

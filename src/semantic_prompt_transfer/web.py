@@ -116,9 +116,9 @@ def create_fastapi_app(
         except Exception as exc:
             application.update_upload(
                 scope,
-                FileStatus.FAILED,
-                progress=0,
-                message="파일 처리에 실패했습니다.",
+                FileStatus.EXCLUDED,
+                progress=100,
+                message="이 자료는 사용에서 제외하고 나머지 자료로 계속 진행합니다.",
                 error=str(exc),
             )
 

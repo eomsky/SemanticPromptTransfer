@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "release": "v0.26.4",
+  "package_version": "0.26.4",
+  "drive_root": "/content/drive/MyDrive/SemanticPromptTransfer",
+  "runtime_root": "/content/spt_poc_runtime",
+  "stage_root": "/content/spt_bootstrap_v0264",
+  "assets": [
+    {
+      "role": "wheel",
+      "source": "versions/v0.26.4/semantic_prompt_transfer-0.26.4-py3-none-any.whl",
+      "target": "package/semantic_prompt_transfer-0.26.4-py3-none-any.whl",
+      "size": 439517,
+      "sha256": "0778813c22a9f4489939f1234f9fb452737f9be163928102c4db813504a26230"
+    }
+  ]
+}

@@ -13,13 +13,14 @@ from .domain import DocumentKind, FileStatus, JobStage
 
 
 ALLOWED_FILE_TRANSITIONS = {
-    FileStatus.UPLOADED: {FileStatus.VALIDATING, FileStatus.DELETING, FileStatus.FAILED},
-    FileStatus.VALIDATING: {FileStatus.PARSING, FileStatus.FAILED, FileStatus.DELETING},
-    FileStatus.PARSING: {FileStatus.INDEXING, FileStatus.READY, FileStatus.FAILED, FileStatus.DELETING},
-    FileStatus.INDEXING: {FileStatus.READY, FileStatus.FAILED, FileStatus.DELETING},
-    FileStatus.READY: {FileStatus.DELETING, FileStatus.FAILED},
-    FileStatus.FAILED: {FileStatus.VALIDATING, FileStatus.DELETING},
-    FileStatus.DELETING: {FileStatus.DELETED, FileStatus.FAILED},
+    FileStatus.UPLOADED: {FileStatus.VALIDATING, FileStatus.DELETING, FileStatus.FAILED, FileStatus.EXCLUDED},
+    FileStatus.VALIDATING: {FileStatus.PARSING, FileStatus.FAILED, FileStatus.EXCLUDED, FileStatus.DELETING},
+    FileStatus.PARSING: {FileStatus.INDEXING, FileStatus.READY, FileStatus.FAILED, FileStatus.EXCLUDED, FileStatus.DELETING},
+    FileStatus.INDEXING: {FileStatus.READY, FileStatus.FAILED, FileStatus.EXCLUDED, FileStatus.DELETING},
+    FileStatus.READY: {FileStatus.DELETING, FileStatus.FAILED, FileStatus.EXCLUDED},
+    FileStatus.FAILED: {FileStatus.VALIDATING, FileStatus.EXCLUDED, FileStatus.DELETING},
+    FileStatus.EXCLUDED: {FileStatus.VALIDATING, FileStatus.DELETING},
+    FileStatus.DELETING: {FileStatus.DELETED, FileStatus.FAILED, FileStatus.EXCLUDED},
     FileStatus.DELETED: set(),
 }
 
@@ -161,7 +162,7 @@ class OperationalRegistry:
                SET progress=CASE status
                  WHEN 'UPLOADED' THEN 15 WHEN 'VALIDATING' THEN 25
                  WHEN 'PARSING' THEN 45 WHEN 'INDEXING' THEN 70
-                 WHEN 'READY' THEN 100 WHEN 'DELETING' THEN 100
+                 WHEN 'READY' THEN 100 WHEN 'EXCLUDED' THEN 100 WHEN 'DELETING' THEN 100
                  WHEN 'DELETED' THEN 100 ELSE progress END
                WHERE progress=0 AND status<>'FAILED'"""
         )
@@ -170,7 +171,7 @@ class OperationalRegistry:
                SET processing_message=CASE status
                  WHEN 'UPLOADED' THEN '파일적재' WHEN 'VALIDATING' THEN '파일검증'
                  WHEN 'PARSING' THEN '파일해석' WHEN 'INDEXING' THEN '벡터임베딩'
-                 WHEN 'READY' THEN '완료' WHEN 'FAILED' THEN '실패'
+                 WHEN 'READY' THEN '완료' WHEN 'FAILED' THEN '사용 제외(레거시)' WHEN 'EXCLUDED' THEN '사용 제외'
                  WHEN 'DELETING' THEN '삭제중' WHEN 'DELETED' THEN '삭제완료'
                  ELSE '' END
                WHERE processing_message=''"""
@@ -181,6 +182,18 @@ class OperationalRegistry:
             "INSERT INTO audit_events VALUES (?, ?, ?, ?, ?, ?, ?)",
             (uuid.uuid4().hex, tenant_id, case_id, entity_id, event_type, json.dumps(payload, ensure_ascii=False), time.time()),
         )
+
+    @_locked
+    def record_audit_event(
+        self,
+        tenant_id: str,
+        case_id: str,
+        entity_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        self._audit(tenant_id, case_id, entity_id, event_type, dict(payload))
+        self.connection.commit()
 
     @_locked
     def register_document(
@@ -267,7 +280,7 @@ class OperationalRegistry:
             raise ValueError("document progress must be between 0 and 100")
         if (
             next_progress < current.progress
-            and status not in {FileStatus.FAILED, FileStatus.DELETING, FileStatus.DELETED}
+            and status not in {FileStatus.FAILED, FileStatus.EXCLUDED, FileStatus.DELETING, FileStatus.DELETED}
         ):
             raise ValueError("document progress cannot decrease")
         next_message = message if message is not None else status.progress_stage

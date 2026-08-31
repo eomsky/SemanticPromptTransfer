@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import zipfile
+from html import escape
 from pathlib import Path
 from typing import Iterable
 
@@ -121,3 +123,55 @@ class OpinionDocumentBuilder:
         target.parent.mkdir(parents=True, exist_ok=True)
         document.save(target)
         return target
+    def build_minimal(
+        self,
+        case: CaseContext,
+        sections: Iterable[ReviewSectionDraft],
+        output_path: str | Path,
+        *,
+        title: str = "여신 심사의견",
+    ) -> Path:
+        """Dependency-light OOXML fallback used when the normal renderer cannot complete."""
+        rows = list(sections)
+        by_item = {section.review_item: section for section in rows}
+        paragraphs = [
+            title,
+            f"심사건: {case.case_id}",
+            f"여신유형: {case.loan_type}",
+            f"산업분류: {case.industry_code}",
+            f"대상기업: {case.company_name or '미지정'}",
+        ]
+        for item in ReviewItem.ordered():
+            paragraphs.append(f"{item.value}. {item.title}")
+            paragraphs.append(self._visible_text(by_item[item].text) if item in by_item else "추가 자료 확인이 필요합니다.")
+        body = "".join(
+            f'<w:p><w:r><w:t xml:space="preserve">{escape(text)}</w:t></w:r></w:p>'
+            for text in paragraphs
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f'<w:body>{body}<w:sectPr/></w:body></w:document>'
+        )
+        content_types = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '</Types>'
+        )
+        rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            '</Relationships>'
+        )
+        target = Path(output_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types)
+            archive.writestr("_rels/.rels", rels)
+            archive.writestr("word/document.xml", document_xml)
+        return target
+

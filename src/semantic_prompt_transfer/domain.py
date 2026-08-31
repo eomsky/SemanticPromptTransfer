@@ -28,6 +28,8 @@ class ReviewItem(str, Enum):
 
 
 class SourceTier(IntEnum):
+    """Backward-compatible provenance categories; numeric values are not evidence priority."""
+
     CREDIT_REPORT_ITEM = 1
     CREDIT_REPORT_COMMON = 2
     ATTACHMENT = 3
@@ -45,7 +47,8 @@ class FileStatus(str, Enum):
     PARSING = "PARSING"
     INDEXING = "INDEXING"
     READY = "READY"
-    FAILED = "FAILED"
+    FAILED = "FAILED"  # legacy compatibility; new POC flows converge to EXCLUDED instead
+    EXCLUDED = "EXCLUDED"
     DELETING = "DELETING"
     DELETED = "DELETED"
 
@@ -57,7 +60,8 @@ class FileStatus(str, Enum):
             FileStatus.PARSING: "파일해석",
             FileStatus.INDEXING: "벡터임베딩",
             FileStatus.READY: "완료",
-            FileStatus.FAILED: "실패",
+            FileStatus.FAILED: "사용 제외(레거시)",
+            FileStatus.EXCLUDED: "사용 제외",
             FileStatus.DELETING: "삭제중",
             FileStatus.DELETED: "삭제완료",
         }[self]
@@ -70,7 +74,8 @@ class FileStatus(str, Enum):
             FileStatus.PARSING: 45,
             FileStatus.INDEXING: 70,
             FileStatus.READY: 100,
-            FileStatus.FAILED: 0,
+            FileStatus.FAILED: 100,
+            FileStatus.EXCLUDED: 100,
             FileStatus.DELETING: 100,
             FileStatus.DELETED: 100,
         }[self]
@@ -83,9 +88,13 @@ class JobStage(str, Enum):
     ATTACHMENT_RETRIEVAL = "ATTACHMENT_RETRIEVAL"
     ITEM_GENERATION = "ITEM_GENERATION"
     VALIDATING = "VALIDATING"
+    REPAIRING = "REPAIRING"
+    FALLBACK_GENERATING = "FALLBACK_GENERATING"
+    CROSS_VALIDATING = "CROSS_VALIDATING"
     DOCX_RENDER = "DOCX_RENDER"
     COMPLETE = "COMPLETE"
-    FAILED = "FAILED"
+    COMPLETE_WITH_WARNINGS = "COMPLETE_WITH_WARNINGS"
+    FAILED = "FAILED"  # legacy compatibility; generation code does not terminate here
 
 
 @dataclass(frozen=True)
@@ -210,11 +219,32 @@ class EvidenceRecord:
     page: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def source_class(self) -> str:
+        return "credit_report" if self.source_tier in {
+            SourceTier.CREDIT_REPORT_ITEM,
+            SourceTier.CREDIT_REPORT_COMMON,
+        } else "attachment"
+
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["review_item"] = self.review_item.value
         value["source_tier"] = int(self.source_tier)
+        value["source_class"] = self.source_class
         return value
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "EvidenceRecord":
+        return cls(
+            evidence_id=str(value["evidence_id"]),
+            review_item=ReviewItem(str(value["review_item"])),
+            source_tier=SourceTier(int(value["source_tier"])),
+            content=str(value.get("content") or ""),
+            document_id=str(value.get("document_id") or "unknown"),
+            source_filename=value.get("source_filename"),
+            page=int(value["page"]) if value.get("page") is not None else None,
+            metadata=dict(value.get("metadata") or {}),
+        )
 
 
 @dataclass(frozen=True)

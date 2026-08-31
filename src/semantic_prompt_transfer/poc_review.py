@@ -10,12 +10,13 @@ from typing import Any
 
 from .colab_runtime import EphemeralColabRuntime
 from .config import DocumentScope
-from .domain import CaseContext, CreditFact, DocumentKind, FileStatus, JobStage, ReviewItem
+from .domain import CaseContext, CreditFact, DocumentKind, FileStatus, JobStage, ReviewItem, ReviewSectionDraft
 from .evidence_capture import EvidenceCaptureService
 from .fewshot import FewShotSelector
 from .llm import TextGenerator
 from .orchestration import ReviewGenerationOrchestrator, ReviewGenerationResult
 from .poc_processing import PocUploadProcessor, ShardedAttachmentRetriever
+from .review_docx import OpinionDocumentBuilder
 
 
 class PocCreditFactRepository:
@@ -103,13 +104,6 @@ class EphemeralReviewJobService:
             row.document_kind is DocumentKind.ATTACHMENT for row in documents
         ):
             raise ValueError("a credit report or at least one attachment is required")
-        blocked = [
-            row.filename
-            for row in documents
-            if row.status in {FileStatus.FAILED, FileStatus.DELETING, FileStatus.DELETED}
-        ]
-        if blocked:
-            raise ValueError("remove failed or deleting uploads first: " + ", ".join(blocked))
         job = self.runtime.registry.create_job(tenant_id, case_id)
         with self._condition:
             self._events[job.job_id] = []
@@ -138,7 +132,7 @@ class EphemeralReviewJobService:
         documents = self.runtime.registry.list_documents(job.tenant_id, job.case_id)
         try:
             for document_index, document in enumerate(documents):
-                if document.status is FileStatus.READY:
+                if document.status in {FileStatus.READY, FileStatus.EXCLUDED, FileStatus.DELETING, FileStatus.DELETED}:
                     continue
                 if self.upload_processor is None:
                     raise RuntimeError("upload processor is required for deferred document processing")
@@ -189,18 +183,36 @@ class EphemeralReviewJobService:
                         progress,
                     )
                 except Exception as exc:
-                    current = self.runtime.registry.get_document(
-                        job.tenant_id, job.case_id, document.document_id
-                    )
-                    if current.status is not FileStatus.FAILED:
+                    try:
                         self.runtime.application.update_upload(
                             scope,
-                            FileStatus.FAILED,
-                            progress=0,
-                            message="파일 처리에 실패했습니다.",
+                            FileStatus.EXCLUDED,
+                            progress=100,
+                            message="이 자료는 사용에서 제외하고 나머지 자료로 계속 진행합니다.",
                             error=str(exc),
                         )
-                    raise
+                    except Exception:
+                        pass
+                    recorder = getattr(self.runtime.registry, "record_audit_event", None)
+                    if callable(recorder):
+                        try:
+                            recorder(job.tenant_id, job.case_id, document.document_id, "UPLOAD_PROCESSING_EXCLUDED", {
+                                "error_type": type(exc).__name__, "message": str(exc)[:1500]
+                            })
+                        except Exception:
+                            pass
+                    self._publish(
+                        job_id,
+                        "file_progress",
+                        stage=JobStage.PRECHECK.value,
+                        progress=min(4, self.runtime.registry.get_job(job_id).progress),
+                        message=f"{document.filename}: 자료 사용 제외 · 계속 진행",
+                        document_id=document.document_id,
+                        filename=document.filename,
+                        file_status=FileStatus.EXCLUDED.value,
+                        file_progress=100,
+                    )
+                    continue
 
             def on_progress(event) -> None:
                 self._publish(job_id, "stage", **event.to_dict())
@@ -237,9 +249,21 @@ class EphemeralReviewJobService:
                 )
 
             output = self.runtime.review_output_path(job.tenant_id, job.case_id, job_id)
+            try:
+                credit_facts = self.facts.load(job.tenant_id, job.case_id)
+            except Exception as exc:
+                credit_facts = []
+                recorder = getattr(self.runtime.registry, "record_audit_event", None)
+                if callable(recorder):
+                    try:
+                        recorder(job.tenant_id, job.case_id, job_id, "CREDIT_FACT_LOAD_RECOVERED", {
+                            "error_type": type(exc).__name__, "message": str(exc)[:1500]
+                        })
+                    except Exception:
+                        pass
             result = self.orchestrator.generate(
                 case,
-                self.facts.load(job.tenant_id, job.case_id),
+                credit_facts,
                 None,
                 output,
                 progress_callback=on_progress,
@@ -249,32 +273,55 @@ class EphemeralReviewJobService:
             )
             with self._condition:
                 self._results[job_id] = result
+            final_job = self.runtime.registry.get_job(job_id)
             self._publish(
                 job_id,
                 "complete",
-                stage=JobStage.COMPLETE.value,
+                stage=final_job.stage.value,
                 progress=100,
-                message="심사의견 생성이 완료되었습니다.",
+                message=final_job.message or "심사의견 생성이 완료되었습니다.",
                 output_filename=Path(result.output_path).name,
+                recovered=final_job.stage is JobStage.COMPLETE_WITH_WARNINGS,
             )
             return result
         except Exception as exc:
-            current = self.runtime.registry.get_job(job_id)
-            if current.stage is not JobStage.FAILED:
-                self.runtime.registry.update_job(
-                    job_id,
-                    JobStage.FAILED,
-                    min(current.progress, 99),
-                    str(exc),
+            # Last application-boundary safety net. Raw errors are audited only; the user receives
+            # a conservative five-item document and a normal completion event.
+            recorder = getattr(self.runtime.registry, "record_audit_event", None)
+            if callable(recorder):
+                try:
+                    recorder(job.tenant_id, job.case_id, job_id, "JOB_BOUNDARY_EMERGENCY_RECOVERY", {
+                        "error_type": type(exc).__name__, "message": str(exc)[:1500]
+                    })
+                except Exception:
+                    pass
+            sections = tuple(
+                ReviewSectionDraft(
+                    item,
+                    "현재 처리 가능한 근거 범위가 제한되어 해당 심사항목은 추가 자료 확인이 필요하다.",
+                    (),
+                    {"valid": True, "issues": [], "cited_evidence_ids": [], "recovered": True},
                 )
-            self._publish(
-                job_id,
-                "error",
-                stage=JobStage.FAILED.value,
-                progress=min(current.progress, 99),
-                message=str(exc),
+                for item in ReviewItem.ordered()
             )
-            raise
+            output = self.runtime.review_output_path(job.tenant_id, job.case_id, job_id)
+            target = OpinionDocumentBuilder().build_minimal(case, sections, output)
+            result = ReviewGenerationResult(job_id, sections, (), (), str(target))
+            with self._condition:
+                self._results[job_id] = result
+            try:
+                self.runtime.registry.update_job(
+                    job_id, JobStage.COMPLETE_WITH_WARNINGS, 100,
+                    "보수적 대체문구로 심사의견 생성을 완료했습니다.", str(target)
+                )
+            except Exception:
+                pass
+            self._publish(
+                job_id, "complete", stage=JobStage.COMPLETE_WITH_WARNINGS.value, progress=100,
+                message="보수적 대체문구로 심사의견 생성을 완료했습니다.",
+                output_filename=Path(target).name, recovered=True,
+            )
+            return result
         finally:
             with self._condition:
                 self._terminal_jobs.add(job_id)
@@ -340,7 +387,7 @@ class EphemeralReviewJobService:
         job = self.runtime.registry.get_job(job_id)
         with self._condition:
             result = self._results.get(job_id)
-        if job.stage is not JobStage.COMPLETE or job.progress != 100 or result is None:
+        if job.stage not in {JobStage.COMPLETE, JobStage.COMPLETE_WITH_WARNINGS} or job.progress != 100 or result is None:
             raise RuntimeError("심사의견 스트림 완료 후에만 후속 대화를 시작할 수 있습니다.")
 
     def _chat_messages(self, job_id: str, message: str) -> list[dict[str, str]]:
@@ -414,22 +461,35 @@ class EphemeralReviewJobService:
                     {"role": "user", "content": prompt}
                 )
             yield {"type": "chat_start", "agent": "심사지원 에이전트"}
-            stream = getattr(self.generator, "stream", None)
             pieces: list[str] = []
-            if callable(stream):
-                for token in stream(messages):
-                    token_text = str(token)
-                    if token_text:
-                        pieces.append(token_text)
-                        yield {"type": "chat_token", "token": token_text}
-            else:
-                generated = self.generator.generate(messages)
-                if generated:
-                    pieces.append(str(generated))
-                    yield {"type": "chat_token", "token": str(generated)}
-            answer = "".join(pieces).strip()
-            if not answer:
-                raise RuntimeError("심사지원 에이전트가 빈 답변을 반환했습니다.")
+            try:
+                stream = getattr(self.generator, "stream", None)
+                if callable(stream):
+                    for token in stream(messages):
+                        token_text = str(token)
+                        if token_text:
+                            pieces.append(token_text)
+                            yield {"type": "chat_token", "token": token_text}
+                else:
+                    generated = self.generator.generate(messages)
+                    if generated:
+                        pieces.append(str(generated))
+                        yield {"type": "chat_token", "token": str(generated)}
+                answer = "".join(pieces).strip()
+                if not answer:
+                    raise RuntimeError("empty chat response")
+            except Exception as exc:
+                recorder = getattr(self.runtime.registry, "record_audit_event", None)
+                if callable(recorder):
+                    try:
+                        job = self.runtime.registry.get_job(job_id)
+                        recorder(job.tenant_id, job.case_id, job_id, "CHAT_GENERATION_RECOVERED", {
+                            "error_type": type(exc).__name__, "message": str(exc)[:1000]
+                        })
+                    except Exception:
+                        pass
+                answer = "현재 완료된 심사의견과 확인된 근거자료 범위에서 답변을 이어가겠습니다. 요청사항은 추가 자료 확인이 필요한 부분을 구분하여 검토해야 합니다."
+                yield {"type": "chat_token", "token": answer}
             with self._condition:
                 self._chat_history.setdefault(job_id, []).append(
                     {"role": "assistant", "content": answer}

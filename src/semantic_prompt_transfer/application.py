@@ -53,6 +53,7 @@ class OperationalApplicationService:
                 row
                 for row in existing
                 if row.document_kind is DocumentKind.CREDIT_REPORT
+                and row.status not in {FileStatus.EXCLUDED, FileStatus.DELETED}
                 and row.document_id != scope.document_id
             ]
             if conflict:

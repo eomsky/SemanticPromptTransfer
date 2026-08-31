@@ -495,11 +495,47 @@ class ShardedAttachmentRetriever:
         self.vector_store = vector_store
         self.top_k = int(top_k)
 
+    @staticmethod
+    def _dedupe_key(hit: dict[str, Any]) -> str:
+        text = " ".join(str(hit.get("document") or hit.get("embedding_text") or "").lower().split())
+        return hashlib.sha256(text[:1200].encode("utf-8")).hexdigest()
+
     def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
         filters = dict(kwargs.get("filters") or {})
         missing = [key for key in ("tenant_id", "case_id") if not filters.get(key)]
         if missing:
             raise ValueError(f"POC retrieval requires scope filters: {missing}")
         embedding = self.encoder.encode_queries([query])[0]
-        hits = self.vector_store.search(embedding, top_k=self.top_k, filters=filters)
-        return {"query": query, "filters": filters, "hits": hits}
+        raw = self.vector_store.search(embedding, top_k=max(self.top_k * 4, self.top_k), filters=filters)
+        if not raw:
+            return {"query": query, "filters": filters, "hits": [], "retrieval_quality": "empty"}
+
+        best = float(raw[0].get("score") or 0.0)
+        # Dynamic relevance gate: retain results close to the best match, but do not
+        # force unrelated evidence into the prompt when every cosine score is weak.
+        floor = max(0.10, best - 0.12)
+        accepted: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in raw:
+            score = float(hit.get("score") or 0.0)
+            if score < floor:
+                continue
+            key = self._dedupe_key(hit)
+            if key in seen:
+                continue
+            seen.add(key)
+            row = dict(hit)
+            row["relevance_status"] = "accepted"
+            accepted.append(row)
+            if len(accepted) >= self.top_k:
+                break
+        quality = "accepted" if accepted else "low_relevance"
+        return {
+            "query": query,
+            "filters": filters,
+            "hits": accepted,
+            "retrieval_quality": quality,
+            "best_score": best,
+            "score_floor": floor,
+            "raw_hit_count": len(raw),
+        }

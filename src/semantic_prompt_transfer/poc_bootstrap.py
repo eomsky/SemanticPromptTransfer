@@ -80,9 +80,10 @@ def build_colab_poc(
             FewShotRegistry.from_json(few_shot_path or _example_path("few_shots.json"))
         )
         if generator is not None:
-            # Preserve a local generator's streaming interface. Deterministic
-            # citation/numeric validation remains in the orchestrator.
-            text_generator: TextGenerator = generator
+            # Every configured primary, including the local native-vLLM adapter, is
+            # wrapped so transport/model faults and grounding precheck failures converge
+            # to deterministic current-case evidence instead of a terminal job failure.
+            text_generator: TextGenerator = FallbackGenerator(generator, EvidenceTemplateGenerator())
         elif llm_base_url:
             primary = OpenAICompatibleHttpGenerator(
                 RemoteGenerationConfig(

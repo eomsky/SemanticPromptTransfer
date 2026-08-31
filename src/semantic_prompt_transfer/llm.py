@@ -185,9 +185,20 @@ class OpenAICompatibleHttpGenerator:
 
 
 class EvidenceTemplateGenerator:
-    """Instant CPU fallback that never invents facts outside the evidence block."""
+    """Instant deterministic fallback that copies only current-case evidence."""
 
-    _evidence = re.compile(
+    _modern_evidence = re.compile(
+        r"\[(?P<source>CREDIT_REPORT|ATTACHMENT) EVIDENCE\]\n"
+        r"source_class=[^\n]*\n"
+        r"evidence_id=(?P<id>[^\n]+)\n"
+        r"document_id=[^\n]*\n"
+        r"source_filename=[^\n]*\n"
+        r"page=[^\n]*\n"
+        r"direct_conflict_credit_ids=(?P<conflicts>[^\n]*)\n"
+        r"content=(?P<content>.*?)(?=\n\n\[|\n\n\[작성요청\]|\Z)",
+        re.DOTALL,
+    )
+    _legacy_evidence = re.compile(
         r"\[TIER_(?P<tier>[123]) EVIDENCE\]\n"
         r"evidence_id=(?P<id>[^\n]+)\n"
         r"document_id=[^\n]*\n"
@@ -206,20 +217,23 @@ class EvidenceTemplateGenerator:
             (message.get("content", "") for message in reversed(messages) if message.get("role") == "user"),
             "",
         )
-        matches = list(self._evidence.finditer(user))
-        if not matches:
-            raise ValueError("current-case evidence is required for fallback generation")
-        selected = sorted(matches, key=lambda row: int(row.group("tier")))[: self.max_evidence]
+        modern = list(self._modern_evidence.finditer(user))
+        if modern:
+            safe = [m for m in modern if not (m.group("source") == "ATTACHMENT" and m.group("conflicts").strip())]
+            selected = (safe or modern)[: self.max_evidence]
+        else:
+            legacy = list(self._legacy_evidence.finditer(user))
+            selected = legacy[: self.max_evidence]
+        if not selected:
+            return "현재 제공된 자료에서 해당 심사항목의 직접 근거를 확인하지 못해 추가 확인이 필요하다."
         statements = []
         for row in selected:
             content = " ".join(row.group("content").split())[: self.max_content_chars].rstrip()
-            statements.append(f"{content} [{row.group('id')}]")
-        return (
-            "확인된 기초자료에 따르면 "
-            + " ".join(statements)
-            + " 현재 자료 범위에서 현황을 우선 확인하였으며, 향후 전망은 추가 실적과 "
-            "변동 요인을 함께 점검하는 보수적 접근이 필요하다."
-        )
+            if content:
+                statements.append(f"{content} [{row.group('id')}]")
+        if not statements:
+            return f"확인된 근거자료를 기준으로 추가 검토가 필요하다. [{selected[0].group('id')}]"
+        return "확인된 근거자료상 " + " ".join(statements)
 
 
 class TransformersCpuGenerator:
@@ -396,9 +410,10 @@ class FallbackGenerator:
         scrubbed = text
         for evidence_id in evidence_ids:
             scrubbed = scrubbed.replace(evidence_id, "")
-        number_pattern = re.compile(r"(?<![A-Za-z_])\d[\d,]*(?:\.\d+)?%?")
-        evidence_numbers = {value.replace(",", "") for value in number_pattern.findall(evidence_text)}
-        output_numbers = {value.replace(",", "") for value in number_pattern.findall(scrubbed)}
+        cell_pattern = re.compile(r"\b[A-Z]{1,3}\d{1,7}(?==)")
+        number_pattern = re.compile(r"(?<![A-Za-z0-9_])[+-]?\d[\d,]*(?:\.\d+)?%?(?![A-Za-z0-9_])")
+        evidence_numbers = {value.replace(",", "") for value in number_pattern.findall(cell_pattern.sub("", evidence_text))}
+        output_numbers = {value.replace(",", "") for value in number_pattern.findall(cell_pattern.sub("", scrubbed))}
         return output_numbers.issubset(evidence_numbers)
 
     def generate(self, messages: list[dict[str, str]]) -> str:
@@ -413,6 +428,26 @@ class FallbackGenerator:
             self.last_backend = type(self.fallback).__name__
             self.last_error = f"{type(exc).__name__}: {exc}"
             return self.fallback.generate(messages)
+
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        # Buffer the primary stream until the grounding precheck succeeds; this avoids
+        # exposing an invalid draft and still preserves the streaming protocol contract.
+        try:
+            primary_stream = getattr(self.primary, "stream", None)
+            if callable(primary_stream):
+                text = "".join(str(token) for token in primary_stream(messages)).strip()
+            else:
+                text = self.primary.generate(messages)
+            if not text or not self._grounded(text, messages):
+                raise ValueError("primary output failed the grounding precheck")
+            self.last_backend = type(self.primary).__name__
+            self.last_error = None
+        except Exception as exc:
+            self.last_backend = type(self.fallback).__name__
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            text = self.fallback.generate(messages)
+        if text:
+            yield str(text)
 
 
 def default_cpu_generator(
