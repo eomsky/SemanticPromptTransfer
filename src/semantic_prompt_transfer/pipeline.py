@@ -12,11 +12,12 @@ from .chunking import PackageChunkBuilder
 from .config import ArtifactMode, DocumentScope, IndexWriteStrategy, PipelineConfig
 from .encoding import EncoderBackend, EncoderRegistry
 from .indexing import RAGIndex, index_write_lock
+from .identity import global_chunk_id
 from .prompting import PromptPackage, PromptPackageBuilder
 from .retrieval import RetrievalEngine
 
 
-PACKAGE_VERSION = "0.19.0"
+PACKAGE_VERSION = "0.20.0"
 
 
 def _sha256(path: Path) -> str:
@@ -90,7 +91,25 @@ class RAGPipeline:
         records = []
         scope_metadata = scope.as_metadata()
         for record in builder.build(master):
-            records.append(replace(record, metadata={**record.metadata, **scope_metadata}))
+            local_chunk_id = record.chunk_id
+            global_id = global_chunk_id(
+                scope.tenant_id,
+                scope.case_id,
+                scope.document_id,
+                local_chunk_id,
+                int(self.config.representation_level),
+            )
+            records.append(
+                replace(
+                    record,
+                    metadata={
+                        **record.metadata,
+                        **scope_metadata,
+                        "local_chunk_id": local_chunk_id,
+                        "global_chunk_id": global_id,
+                    },
+                )
+            )
         embeddings = self.encoder.encode_documents(record.embedding_text for record in records)
         index = RAGIndex(
             records=records,
@@ -117,6 +136,23 @@ class RAGPipeline:
                 index.save(self.config.index_path)
         self._activate(index)
         return index
+
+    def delete_document(self, scope: DocumentScope) -> dict[str, Any]:
+        if self.config.index_mode is not ArtifactMode.WRITE:
+            raise ValueError("delete_document requires WRITE index mode")
+        scope_metadata = scope.as_metadata()
+        with index_write_lock(self.config.index_path):
+            if not self.config.index_path.is_file():
+                return {"deleted_chunks": 0, "scope": scope_metadata}
+            current = RAGIndex.load(self.config.index_path)
+            updated, deleted = current.delete_document(
+                scope.tenant_id,
+                scope.case_id,
+                scope.document_id,
+            )
+            updated.save(self.config.index_path)
+        self._activate(updated)
+        return {"deleted_chunks": deleted, "scope": scope_metadata, "stats": updated.stats()}
 
     def retrieve(
         self,

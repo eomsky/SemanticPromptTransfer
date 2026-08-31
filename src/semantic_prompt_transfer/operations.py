@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import DocumentScope, PipelineConfig
 from .pipeline import RAGPipeline
+from .domain import FileStatus
+from .registry import OperationalRegistry
+from .vector_store import VectorStoreBackend
 
 
 class OfflineIndexBuilder:
@@ -15,6 +18,9 @@ class OfflineIndexBuilder:
 
     def build(self, master_path: str | Path, scope: DocumentScope) -> dict[str, Any]:
         return self.pipeline.prepare(master_path, scope).stats()
+
+    def delete(self, scope: DocumentScope) -> dict[str, Any]:
+        return self.pipeline.delete_document(scope)
 
 
 class OnlineRAGService:
@@ -46,3 +52,51 @@ class OnlineRAGService:
         missing = [key for key in ("tenant_id", "case_id") if not filters.get(key)]
         if missing:
             raise ValueError(f"online service requires scope filters: {missing}")
+
+
+class DocumentLifecycleService:
+    """Coordinate file-list deletion with vector and derived-asset removal."""
+
+    def __init__(
+        self,
+        registry: OperationalRegistry,
+        vector_store: VectorStoreBackend,
+        *,
+        remove_original: Callable[[DocumentScope], None] | None = None,
+        remove_derived: Callable[[DocumentScope], None] | None = None,
+    ) -> None:
+        self.registry = registry
+        self.vector_store = vector_store
+        self.remove_original = remove_original
+        self.remove_derived = remove_derived
+
+    def delete(self, scope: DocumentScope) -> dict[str, Any]:
+        current = self.registry.get_document(scope.tenant_id, scope.case_id, scope.document_id)
+        if current.status is FileStatus.DELETED:
+            return {"status": "DELETED", "deleted_vectors": 0, "idempotent": True}
+        self.registry.transition_document(
+            scope.tenant_id, scope.case_id, scope.document_id, FileStatus.DELETING
+        )
+        try:
+            deleted_vectors = self.vector_store.delete_document(scope)
+            if self.remove_derived:
+                self.remove_derived(scope)
+            if self.remove_original:
+                self.remove_original(scope)
+            final = self.registry.transition_document(
+                scope.tenant_id, scope.case_id, scope.document_id, FileStatus.DELETED
+            )
+            return {
+                "status": final.status.value,
+                "deleted_vectors": deleted_vectors,
+                "idempotent": False,
+            }
+        except Exception as exc:
+            self.registry.transition_document(
+                scope.tenant_id,
+                scope.case_id,
+                scope.document_id,
+                FileStatus.FAILED,
+                error=str(exc),
+            )
+            raise

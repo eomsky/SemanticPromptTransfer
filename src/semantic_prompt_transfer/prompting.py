@@ -37,11 +37,16 @@ class PromptPackageBuilder:
         used = 0
         for hit in retrieval["hits"]:
             document = str(hit["document"])
+            metadata = hit["metadata"]
+            global_id = metadata.get("global_chunk_id") or hit["chunk_id"]
             block = (
                 f"[근거 {hit['rank']}]\n"
                 f"evidence_id={query_id}-L{representation_level}-R{hit['rank']}\n"
-                f"chunk_id={hit['chunk_id']}\n"
-                f"source_pages={hit['metadata'].get('pages', [])}\n"
+                f"global_chunk_id={global_id}\n"
+                f"local_chunk_id={metadata.get('local_chunk_id') or hit['chunk_id']}\n"
+                f"document_id={metadata.get('document_id')}\n"
+                f"source_filename={metadata.get('source_filename')}\n"
+                f"source_pages={metadata.get('pages', [])}\n"
                 f"content:\n{document}\n"
             )
             if rendered and used + len(block) > self.max_context_chars:
@@ -52,9 +57,12 @@ class PromptPackageBuilder:
                 {
                     "evidence_id": f"{query_id}-L{representation_level}-R{hit['rank']}",
                     "chunk_id": hit["chunk_id"],
+                    "global_chunk_id": global_id,
+                    "document_id": metadata.get("document_id"),
+                    "source_filename": metadata.get("source_filename"),
                     "variant_id": hit.get("variant_id"),
-                    "pages": hit["metadata"].get("pages", []),
-                    "logical_table_id": hit["metadata"].get("logical_table_id"),
+                    "pages": metadata.get("pages", []),
+                    "logical_table_id": metadata.get("logical_table_id"),
                     "score": hit["score"],
                 }
             )
@@ -75,5 +83,4 @@ class PromptPackageBuilder:
             evidence=evidence,
             manifest=dict(manifest),
         )
-
 

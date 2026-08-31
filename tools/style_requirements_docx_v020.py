@@ -102,7 +102,7 @@ def add_page_field(paragraph):
 
 def main():
     root = Path(__file__).resolve().parents[2]
-    path = root / "v019_output/SemanticPromptTransfer_v0.19_REQUIREMENTS.docx"
+    path = root / "v020_output/SemanticPromptTransfer_v0.20_REQUIREMENTS.docx"
     document = Document(path)
     document.settings.odd_and_even_pages_header_footer = False
     for section in document.sections:
@@ -116,7 +116,7 @@ def main():
             section.first_page_header,
         ):
             header = header_part.paragraphs[0]
-            header.text = "SemanticPromptTransfer v0.19 | 패키지 요구사항 정의서"
+            header.text = "SemanticPromptTransfer v0.20 | 운영환경 요구사항 기준선"
             header.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             for run in header.runs:
                 set_run_font(run, size=8.5, color=RGBColor(0x66, 0x66, 0x66))
@@ -171,8 +171,8 @@ def main():
                     paragraph.paragraph_format.space_after = Pt(2)
                     for run in paragraph.runs:
                         set_run_font(run, size=9.2, bold=True if row_index == 0 else None)
-    document.core_properties.title = "SemanticPromptTransfer v0.19 패키지 요구사항 정의서"
-    document.core_properties.subject = "L0 기본 운영 RAG 패키지 수학적 명세"
+    document.core_properties.title = "SemanticPromptTransfer v0.20 운영환경 요구사항 기준선"
+    document.core_properties.subject = "여신심사 운영 RAG와 FEW SHOT 선택 계약"
     document.core_properties.author = "SemanticPromptTransfer"
     document.save(path)
     print(path)

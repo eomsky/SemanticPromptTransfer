@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-prompt-transfer"
-version = "0.19.0"
-description = "RAG-ready chunking, CPU embeddings, hybrid retrieval, and evidence prompt packaging"
+version = "0.20.0"
+description = "Operational credit-review RAG with source tiers, loan-type few-shot selection, lifecycle controls, and evidence prompts"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "LicenseRef-Proprietary"
@@ -27,7 +27,12 @@ dependencies = [
   "numpy>=1.26,<3.0",
   "onnxruntime>=1.22,<2.0",
   "tokenizers>=0.22,<1.0",
+  "openpyxl>=3.1,<4.0",
+  "python-docx>=1.1,<2.0",
 ]
+
+[project.optional-dependencies]
+chroma = ["chromadb>=1.0,<2.0"]
 
 [project.urls]
 Homepage = "https://github.com/eomsky/SemanticPromptTransfer"
@@ -45,5 +50,7 @@ where = ["src"]
 semantic_prompt_transfer = [
   "py.typed",
   "examples/stx_engine/*.json",
-  "examples/stx_engine/*.md"
+  "examples/stx_engine/*.md",
+  "examples/operational/*.json",
+  "examples/operational/*.md"
 ]

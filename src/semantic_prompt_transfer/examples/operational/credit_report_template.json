@@ -1,0 +1,31 @@
+{
+  "template_id": "credit-review-standard-sample",
+  "version": "1.0",
+  "mappings": [
+    {
+      "field_id": "sales",
+      "field_name": "매출액",
+      "sheet_name": "기초자료",
+      "cell": "B2",
+      "review_items": ["A", "B", "E"],
+      "unit": "백만원",
+      "period_cell": "C2"
+    },
+    {
+      "field_id": "operating_profit",
+      "field_name": "영업이익",
+      "sheet_name": "기초자료",
+      "cell": "B3",
+      "review_items": ["B"],
+      "unit": "백만원",
+      "period_cell": "C3"
+    },
+    {
+      "field_id": "company_summary",
+      "field_name": "기업개요",
+      "sheet_name": "공통",
+      "cell": "B2",
+      "common": true
+    }
+  ]
+}

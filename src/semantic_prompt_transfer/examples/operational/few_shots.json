@@ -1,0 +1,83 @@
+{
+  "schema_version": "few-shot-registry-1.0",
+  "examples": [
+    {
+      "example_id": "FS-A-MANUFACTURING-WC-001",
+      "review_item_code": "A",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["운전자금"],
+      "industry_codes": ["C"],
+      "situation_tags": ["매출성장"],
+      "input_summary": "제조업 운전자금 심사에서 주요 운전자산이 증가한 상황",
+      "output_example": "주요계정의 증감 원인을 영업규모 변화와 회수·소진 가능성으로 구분하고 향후 부담 여부를 서술한다.",
+      "style_tags": ["원인-영향-전망"]
+    },
+    {
+      "example_id": "FS-B-GENERAL-001",
+      "review_item_code": "B",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["*"],
+      "industry_codes": ["*"],
+      "input_summary": "수익성이 변동한 일반 심사 상황",
+      "output_example": "매출 변화와 원가·판관비 요인을 분리하고 일회성 요인 여부를 확인한 뒤 지속가능성을 평가한다.",
+      "style_tags": ["수익성-지속성"]
+    },
+    {
+      "example_id": "FS-C-FACILITY-MANUFACTURING-001",
+      "review_item_code": "C",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["시설자금"],
+      "industry_codes": ["C"],
+      "input_summary": "제조설비 투자로 차입부담이 확대된 상황",
+      "output_example": "투자에 따른 자산 증가와 차입부담을 함께 제시하고 담보·자본완충력 및 정상화 시점을 검토한다.",
+      "style_tags": ["안정성-완충력"]
+    },
+    {
+      "example_id": "FS-C-GENERAL-001",
+      "review_item_code": "C",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["*"],
+      "industry_codes": ["*"],
+      "input_summary": "재무안정성과 자산의 질을 종합적으로 검토하는 상황",
+      "output_example": "부채구조와 유동성 지표를 자산의 회수가능성 및 손상 위험과 연결하여 완충력을 평가한다.",
+      "style_tags": ["안정성-자산건전성"]
+    },
+    {
+      "example_id": "FS-D-GENERAL-001",
+      "review_item_code": "D",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["*"],
+      "industry_codes": ["*"],
+      "input_summary": "영업현금흐름과 상환재원을 검토하는 상황",
+      "output_example": "손익과 실제 현금창출의 차이를 운전자본과 투자지출로 설명하고 만기별 상환재원과 여유를 평가한다.",
+      "style_tags": ["현금창출-상환재원"]
+    },
+    {
+      "example_id": "FS-E-WHOLESALE-001",
+      "review_item_code": "E",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["운전자금", "*"],
+      "industry_codes": ["G"],
+      "input_summary": "도소매업의 주요 매출처 집중도를 검토하는 상황",
+      "output_example": "상위 거래처 비중과 기간별 변화를 제시하고 거래 지속성, 대체 가능성 및 편중 위험을 구분한다.",
+      "style_tags": ["집중도-변동-지속성"]
+    },
+    {
+      "example_id": "FS-E-GENERAL-001",
+      "review_item_code": "E",
+      "example_version": "1",
+      "approval_status": "APPROVED",
+      "loan_types": ["*"],
+      "industry_codes": ["*"],
+      "input_summary": "주요 매출처 구성과 비중 변화를 검토하는 일반 상황",
+      "output_example": "상위 매출처의 비중 변화와 거래 지속성을 확인하고 편중 위험 및 신규 거래처 확보 여부를 평가한다.",
+      "style_tags": ["매출처-집중도"]
+    }
+  ]
+}

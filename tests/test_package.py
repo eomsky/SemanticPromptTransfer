@@ -6,13 +6,36 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from openpyxl import Workbook
 
 from semantic_prompt_transfer import (
+    CaseContext,
+    CreditFact,
+    CreditFieldMapping,
+    CreditReportParser,
+    CreditReportTemplate,
     DocumentScope,
+    DocumentKind,
+    DocumentLifecycleService,
+    EvidenceAssembler,
+    EvidenceRecord,
+    FewShotExample,
+    FewShotRegistry,
+    FewShotSelector,
+    FileStatus,
+    InMemoryVectorStore,
+    OpinionDocumentBuilder,
+    OpinionValidator,
+    OperationalRegistry,
     PipelineConfig,
     RAGIndex,
     RAGPipeline,
     RepresentationLevel,
+    ReviewGenerationOrchestrator,
+    ReviewItem,
+    ReviewPromptBuilder,
+    ReviewSectionDraft,
+    SourceTier,
 )
 from semantic_prompt_transfer._chunk_builder_base import ChunkRecord
 from semantic_prompt_transfer.encoding import EncoderBackend
@@ -200,6 +223,219 @@ class PackageTests(unittest.TestCase):
             ]
         )
         self.assertEqual(args.representation_level, 0)
+
+
+class OperationalPackageTests(unittest.TestCase):
+    @staticmethod
+    def fact(item, value="확인", common=False, fact_id=None):
+        return CreditFact(
+            fact_id=fact_id or f"FACT-{item.value}-{'C' if common else 'I'}",
+            field_id=f"field-{item.value}",
+            field_name=f"항목 {item.value} 기초자료",
+            value=value,
+            unit=None,
+            period=None,
+            review_items=() if common else (item,),
+            common=common,
+            document_id="credit-report",
+            source_filename="credit.xlsx",
+            sheet_name="기초자료",
+            cell_range="B2",
+        )
+
+    def test_global_chunk_ids_are_unique_across_documents_and_delete_is_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            master_a = root / "a.json"
+            master_b = root / "b.json"
+            master_a.write_text(json.dumps(minimal_master(), ensure_ascii=False), encoding="utf-8")
+            master_b.write_text(json.dumps(minimal_master(), ensure_ascii=False), encoding="utf-8")
+            index_path = root / "index.npz"
+            config = PipelineConfig.for_index_build(
+                model_dir="unused", index_path=index_path, index_write_strategy="UPSERT"
+            )
+            pipeline = RAGPipeline(config, encoder=FakeEncoder())
+            pipeline.prepare(master_a, DocumentScope("tenant", "case", "doc-a"))
+            pipeline.prepare(master_b, DocumentScope("tenant", "case", "doc-b"))
+            loaded = RAGIndex.load(index_path)
+            self.assertEqual(len(loaded.records), 2)
+            self.assertEqual(
+                {row.metadata["local_chunk_id"] for row in loaded.records},
+                {"CH_TEXT_00001"},
+            )
+            self.assertEqual(len({row.metadata["global_chunk_id"] for row in loaded.records}), 2)
+            result = pipeline.delete_document(DocumentScope("tenant", "case", "doc-a"))
+            self.assertEqual(result["deleted_chunks"], 1)
+            remaining = RAGIndex.load(index_path)
+            self.assertEqual([row.metadata["document_id"] for row in remaining.records], ["doc-b"])
+
+    def test_credit_report_parser_preserves_cell_provenance_and_tiers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "credit.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "기초자료"
+            sheet["B2"] = 1250
+            sheet["C2"] = "2025"
+            sheet["B3"] = "제조업체"
+            workbook.save(path)
+            template = CreditReportTemplate(
+                "sample",
+                "1.0",
+                (
+                    CreditFieldMapping(
+                        "sales", "매출액", "기초자료", "B2",
+                        review_items=(ReviewItem.PROFITABILITY,), unit="백만원", period_cell="C2",
+                    ),
+                    CreditFieldMapping(
+                        "summary", "기업개요", "기초자료", "B3", common=True,
+                    ),
+                ),
+            )
+            parsed = CreditReportParser().parse(
+                path,
+                template,
+                DocumentScope(
+                    "tenant", "case", "credit", source_filename="credit.xlsx", document_kind="credit_report"
+                ),
+            )
+            self.assertEqual(len(parsed.facts), 2)
+            self.assertEqual(parsed.facts[0].cell_range, "B2")
+            self.assertEqual(parsed.facts[0].tier, SourceTier.CREDIT_REPORT_ITEM)
+            self.assertEqual(parsed.facts[1].tier, SourceTier.CREDIT_REPORT_COMMON)
+
+    def test_few_shot_selection_uses_item_loan_type_industry_and_tags(self):
+        rows = [
+            FewShotExample(
+                "exact", ReviewItem.PROFITABILITY, "in", "out",
+                loan_types=("운전자금",), industry_codes=("C29",), situation_tags=("성장",),
+            ),
+            FewShotExample(
+                "industry", ReviewItem.PROFITABILITY, "in", "out",
+                loan_types=("*",), industry_codes=("C",),
+            ),
+            FewShotExample(
+                "wrong-loan", ReviewItem.PROFITABILITY, "in", "out",
+                loan_types=("시설자금",), industry_codes=("C29",),
+            ),
+            FewShotExample(
+                "wrong-item", ReviewItem.CASH_FLOW, "in", "out",
+                loan_types=("운전자금",), industry_codes=("C29",),
+            ),
+        ]
+        selected = FewShotSelector(FewShotRegistry(rows), 3).select(
+            ReviewItem.PROFITABILITY,
+            loan_type="운전자금",
+            industry_code="C29",
+            situation_tags=("성장",),
+        )
+        self.assertEqual([row.example_id for row in selected], ["exact", "industry"])
+
+    def test_tiered_evidence_and_prompt_keep_few_shot_out_of_evidence(self):
+        item = ReviewItem.PROFITABILITY
+        facts = [self.fact(item), self.fact(item, common=True, fact_id="COMMON")]
+        retrieval = {
+            "hits": [
+                {
+                    "chunk_id": "CH_TEXT_00001",
+                    "document": "첨부파일 보완 근거",
+                    "score": 0.1,
+                    "metadata": {
+                        "global_chunk_id": "GCH-1",
+                        "document_id": "attachment-1",
+                        "source_filename": "attachment.pdf",
+                        "pages": [2],
+                    },
+                }
+            ]
+        }
+        evidence = EvidenceAssembler().assemble(item, facts, retrieval)
+        self.assertEqual([int(row.source_tier) for row in evidence], [1, 2, 3])
+        example = FewShotExample("FS-1", item, "예시 입력", "예시 출력")
+        prompt = ReviewPromptBuilder().build(
+            CaseContext("tenant", "case", "운전자금", "C29"),
+            item,
+            item.title,
+            evidence,
+            [example],
+        )
+        self.assertTrue(all(row["example_id"] != evidence_row["evidence_id"] for row in prompt.few_shots for evidence_row in prompt.evidence))
+        self.assertTrue(prompt.manifest["few_shot_is_evidence"] is False)
+
+    def test_validator_blocks_few_shot_numeric_and_token_leakage(self):
+        item = ReviewItem.PROFITABILITY
+        evidence = [
+            EvidenceRecord("EV-1", item, SourceTier.CREDIT_REPORT_ITEM, "매출액=100", "credit")
+        ]
+        example = FewShotExample(
+            "FS-1", item, "과거", "과거기업의 비율은 77%", forbidden_tokens=("과거기업",)
+        )
+        valid = OpinionValidator().validate("매출액 100을 확인하였다. EV-1", evidence, [example])
+        self.assertTrue(valid.valid)
+        invalid = OpinionValidator().validate("과거기업 비율은 77%이다. EV-1", evidence, [example])
+        self.assertFalse(invalid.valid)
+        self.assertIn("few_shot_numeric_leakage", {issue.code for issue in invalid.issues})
+        self.assertIn("few_shot_token_leakage", {issue.code for issue in invalid.issues})
+
+    def test_registry_and_vector_delete_lifecycle(self):
+        registry = OperationalRegistry()
+        registry.register_document(
+            tenant_id="tenant", case_id="case", document_id="doc", filename="a.pdf",
+            document_kind=DocumentKind.ATTACHMENT,
+        )
+        for status in (
+            FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING, FileStatus.READY
+        ):
+            registry.transition_document("tenant", "case", "doc", status)
+        vector = InMemoryVectorStore()
+        record = ChunkRecord(
+            "CH_TEXT_00001", "text", "text",
+            {"tenant_id": "tenant", "case_id": "case", "document_id": "doc", "global_chunk_id": "GCH-1"},
+        )
+        vector.upsert_document([record], np.ones((1, 8), dtype=np.float32))
+        deleted = DocumentLifecycleService(registry, vector).delete(
+            DocumentScope("tenant", "case", "doc")
+        )
+        self.assertEqual(deleted["deleted_vectors"], 1)
+        self.assertEqual(registry.get_document("tenant", "case", "doc").status, FileStatus.DELETED)
+
+    def test_five_item_orchestration_generates_docx_and_progress(self):
+        class EmptyRetriever:
+            def search(self, query, **kwargs):
+                return {"query": query, "hits": []}
+
+        class CitationLLM:
+            def generate(self, messages):
+                match = __import__("re").search(r"evidence_id=([^\n]+)", messages[1]["content"])
+                return f"현재 자료를 근거로 현황과 전망을 검토하였다. {match.group(1)}"
+
+        examples = [
+            FewShotExample(f"FS-{item.value}", item, "상황", "구조 예시", loan_types=("*",), industry_codes=("*",))
+            for item in ReviewItem.ordered()
+        ]
+        facts = [self.fact(item) for item in ReviewItem.ordered()]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "opinion.docx"
+            result = ReviewGenerationOrchestrator(
+                EmptyRetriever(), FewShotSelector(FewShotRegistry(examples))
+            ).generate(
+                CaseContext("tenant", "case", "운전자금", "C29", "샘플기업"),
+                facts,
+                CitationLLM(),
+                output,
+            )
+            self.assertEqual(len(result.sections), 5)
+            self.assertEqual(result.progress_events[-1].progress, 100)
+            self.assertTrue(output.is_file())
+
+    def test_docx_builder_requires_all_five_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                OpinionDocumentBuilder().build(
+                    CaseContext("tenant", "case", "운전자금", "C29"),
+                    [ReviewSectionDraft(ReviewItem.PROFITABILITY, "text", ())],
+                    Path(tmp) / "bad.docx",
+                )
 
 
 if __name__ == "__main__":

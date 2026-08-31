@@ -32,6 +32,10 @@ class DocumentScope:
     document_id: str
     financial_scope: str = "unspecified"
     source_version: str | None = None
+    source_filename: str | None = None
+    document_kind: str = "attachment"
+    loan_type: str | None = None
+    industry_code: str | None = None
     tags: tuple[str, ...] = ()
 
     def as_metadata(self) -> dict[str, Any]:
@@ -43,6 +47,10 @@ class DocumentScope:
             "document_id": self.document_id,
             "financial_scope": self.financial_scope,
             "source_version": self.source_version,
+            "source_filename": self.source_filename,
+            "document_kind": self.document_kind,
+            "loan_type": self.loan_type,
+            "industry_code": self.industry_code,
             "tags": list(self.tags),
         }
 

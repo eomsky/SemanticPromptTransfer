@@ -1,0 +1,38 @@
+{
+  "schema_version": "validation-1.0",
+  "project": "SemanticPromptTransfer",
+  "package_version": "0.20.0",
+  "validated_at": "2026-08-31",
+  "status": "PASS_REFERENCE_PACKAGE",
+  "checks": {
+    "total": 19,
+    "passed": 19,
+    "failed": 0,
+    "unit_tests": "15/15",
+    "real_encoder": "multilingual-e5-small ONNX INT8 CPU, dimension 384",
+    "multi_document_index": "2 documents in one tenant/case index",
+    "document_delete": "1 document deleted; 1 retained",
+    "credit_report_facts": 3,
+    "review_sections": 5,
+    "few_shot_items": "5/5",
+    "stx_l0_regression": "1090/1090 identical to v0.19",
+    "isolated_wheel_install": true,
+    "requirements_pdf_pages": 5,
+    "requirements_docx_pages": 8,
+    "smoke_opinion_docx_pages": 2
+  },
+  "distribution": {
+    "wheel_files": 39,
+    "sdist_files": 54,
+    "license_expression": "LicenseRef-Proprietary",
+    "forbidden_payloads": []
+  },
+  "not_live_tested": [
+    "Chroma server integration",
+    "bank production LLM",
+    "bank HTML/API and task queue",
+    "real credit-report template",
+    "official opinion Word template"
+  ],
+  "pypi_published": false
+}

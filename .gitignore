@@ -7,5 +7,6 @@ build/
 *.npz.lock
 indexes/
 models/
-*.joblib
+qa_*/
 *_MASTER.json
+*.joblib

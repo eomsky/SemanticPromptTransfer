@@ -100,6 +100,54 @@ class RAGIndex:
         }
         return RAGIndex(records=records, embeddings=embeddings, metadata=metadata)
 
+    def delete_document(
+        self,
+        tenant_id: str,
+        case_id: str,
+        document_id: str,
+    ) -> tuple["RAGIndex", int]:
+        target = (tenant_id, case_id, document_id)
+        keep_indices = [
+            index
+            for index, record in enumerate(self.records)
+            if (
+                record.metadata.get("tenant_id"),
+                record.metadata.get("case_id"),
+                record.metadata.get("document_id"),
+            )
+            != target
+        ]
+        deleted = len(self.records) - len(keep_indices)
+        records = [self.records[index] for index in keep_indices]
+        dimension = self.embeddings.shape[1]
+        embeddings = (
+            self.embeddings[np.asarray(keep_indices, dtype=np.int32)]
+            if keep_indices
+            else np.empty((0, dimension), dtype=np.float32)
+        )
+        scopes = sorted(
+            {
+                (
+                    str(record.metadata.get("tenant_id") or ""),
+                    str(record.metadata.get("case_id") or ""),
+                    str(record.metadata.get("document_id") or ""),
+                )
+                for record in records
+            }
+        )
+        metadata = {
+            **self.metadata,
+            "record_count": len(records),
+            "document_scopes": [list(scope) for scope in scopes],
+            "last_delete": {
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "document_id": document_id,
+                "deleted_chunks": deleted,
+            },
+        }
+        return RAGIndex(records=records, embeddings=embeddings, metadata=metadata), deleted
+
     @classmethod
     def load(cls, path: str | Path) -> "RAGIndex":
         source = Path(path)
