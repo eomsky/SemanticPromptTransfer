@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -19,6 +20,7 @@ from semantic_prompt_transfer import (
     EphemeralColabConfig,
     EphemeralColabRuntime,
     EphemeralReviewJobService,
+    EvidenceCaptureService,
     EvidenceTemplateGenerator,
     FewShotExample,
     FewShotRegistry,
@@ -63,6 +65,27 @@ class FakeEncoder(EncoderBackend):
 
 
 class ColabPocTests(unittest.TestCase):
+    def test_v024_notebook_is_single_llm_streaming_and_fail_fast_ngrok(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.24_COLAB_LAUNCHER.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(notebook["cells"]), 6)
+        code = "\n".join(
+            "".join(cell["source"])
+            for cell in notebook["cells"]
+            if cell["cell_type"] == "code"
+        )
+        for cell in notebook["cells"]:
+            if cell["cell_type"] == "code":
+                compile("".join(cell["source"]), str(notebook_path), "exec")
+        self.assertEqual(code.count("FEW_SHOT_1 ="), 1)
+        self.assertEqual(code.count("FEW_SHOT_2 ="), 1)
+        self.assertEqual(code.count("FEW_SHOT_3 ="), 1)
+        self.assertNotIn("TwoPassReviewGenerator", code)
+        self.assertIn("max_new_tokens=1200", code)
+        self.assertIn('secret("NGROK_AUTHTOKEN")', code)
+        self.assertLess(code.index("ngrok.connect"), code.index("loading LLM"))
+
     def test_one_click_colab_notebook_has_single_executable_cell(self):
         root = Path(__file__).resolve().parents[1]
         notebook_path = (
@@ -336,6 +359,125 @@ class ColabPocTests(unittest.TestCase):
             self.assertEqual(runtime.registry.stats()["documents"], 0)
             runtime.close(purge=True)
 
+    def test_review_job_streams_five_sections_and_captures_credit_evidence(self):
+        class StreamingCitationGenerator:
+            def stream(self, messages):
+                match = re.search(r"evidence_id=([^\n]+)", messages[1]["content"])
+                yield "확인된 기초자료를 근거로 "
+                yield f"현황과 향후 전망을 검토하였다. [{match.group(1)}]"
+
+            def generate(self, messages):
+                return "".join(self.stream(messages))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = EphemeralColabRuntime(
+                EphemeralColabConfig(
+                    root=Path(tmp) / "runtime",
+                    require_content_root=False,
+                    clean_start=True,
+                )
+            )
+            template = CreditReportTemplate(
+                "stream-test",
+                "1",
+                (
+                    CreditFieldMapping(
+                        "summary",
+                        "심사 기초자료",
+                        "기초자료",
+                        "B2",
+                        review_items=ReviewItem.ordered(),
+                    ),
+                ),
+            )
+            processor = PocUploadProcessor(
+                FakeEncoder(), runtime.vectors, runtime.artifacts, credit_template=template
+            )
+            scope = DocumentScope("poc", "case", "credit")
+            source = runtime.artifacts.put(scope, "credit.xlsx", b"placeholder")
+            workbook = Workbook()
+            workbook.active.title = "기초자료"
+            workbook.active["B2"] = "신용조사서 우선 근거"
+            workbook.save(source)
+            runtime.application.register_upload(
+                scope,
+                filename="credit.xlsx",
+                document_kind=DocumentKind.CREDIT_REPORT,
+                size_bytes=source.stat().st_size,
+                storage_uri=str(source),
+                derived_uri=str(runtime.artifacts.derived_path(scope)),
+            )
+            processor.process(
+                scope,
+                source,
+                DocumentKind.CREDIT_REPORT,
+                lambda status, progress, message: runtime.application.update_upload(
+                    scope, status, progress=progress, message=message
+                ),
+            )
+            service = EphemeralReviewJobService(
+                runtime,
+                ShardedAttachmentRetriever(FakeEncoder(), runtime.vectors),
+                FewShotSelector(FewShotRegistry([])),
+                StreamingCitationGenerator(),
+            )
+            job = service.start("poc", "case")
+            result = service.run(str(job["job_id"]))
+            events = list(service.stream_events(str(job["job_id"])))
+            self.assertEqual([event["type"] for event in events].count("section_complete"), 5)
+            self.assertEqual([event["type"] for event in events].count("token"), 10)
+            self.assertEqual(events[-1]["type"], "complete")
+            self.assertEqual([section.review_item for section in result.sections], list(ReviewItem.ordered()))
+            evidence_id = result.sections[0].evidence_ids[0]
+            metadata = service.get_evidence(str(job["job_id"]), evidence_id)
+            capture = service.capture_evidence(str(job["job_id"]), evidence_id)
+            self.assertEqual(metadata["kind"], "xlsx")
+            self.assertEqual(metadata["source_tier"], 1)
+            self.assertTrue(capture.startswith(b"\x89PNG\r\n\x1a\n"))
+            runtime.close(purge=True)
+
+    def test_pdf_capture_uses_page_block_coordinates(self):
+        try:
+            import fitz
+        except ImportError:  # pragma: no cover
+            self.skipTest("PyMuPDF is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = EphemeralColabRuntime(
+                EphemeralColabConfig(
+                    root=Path(tmp) / "runtime",
+                    require_content_root=False,
+                    clean_start=True,
+                )
+            )
+            scope = DocumentScope("poc", "case", "pdf")
+            source = runtime.root / "uploads" / "poc" / "case" / "pdf" / "evidence.pdf"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            document = fitz.open()
+            page = document.new_page(width=400, height=300)
+            page.insert_text((45, 90), "Evidence source line")
+            document.save(source)
+            document.close()
+            runtime.registry.register_document(
+                tenant_id="poc",
+                case_id="case",
+                document_id="pdf",
+                filename="evidence.pdf",
+                document_kind=DocumentKind.ATTACHMENT,
+                storage_uri=str(source),
+            )
+            capture = EvidenceCaptureService(runtime).capture_png(
+                "poc",
+                "case",
+                {
+                    "document_id": "pdf",
+                    "page": 1,
+                    "content": "Evidence source line",
+                    "metadata": {"bbox": [40, 70, 220, 105]},
+                },
+            )
+            self.assertTrue(capture.startswith(b"\x89PNG\r\n\x1a\n"))
+            runtime.close(purge=True)
+
     def test_remote_llm_adapter_calls_openai_compatible_endpoint(self):
         received = {}
 
@@ -389,9 +531,15 @@ class ColabPocTests(unittest.TestCase):
             "심사의견.docx",
             "양식 다운로드",
             "file-x",
+            "/stream?after=",
+            "/capture.png",
+            "심사의견 생성 내용",
+            "currentStage",
         ):
             self.assertIn(value, html)
         self.assertNotIn("업로드 자료현황", html)
+        self.assertNotIn("추가 산출물", html)
+        self.assertNotIn("generate_optional_artifacts", html)
 
 
 if __name__ == "__main__":

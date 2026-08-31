@@ -26,6 +26,9 @@ from .llm import (
     OpenAICompatibleHttpGenerator,
     RemoteGenerationConfig,
     TextGenerator,
+    StreamingTextGenerator,
+    MultimodalGenerationConfig,
+    TransformersMultimodalGenerator,
     TransformersCpuGenerator,
     default_cpu_generator,
 )
@@ -36,6 +39,7 @@ from .prompting import PromptPackage, PromptPackageBuilder
 from .query_profiles import QueryProfileRegistry, ReviewQueryProfile, default_query_profiles
 from .registry import DocumentRecord, JobRecord, OperationalRegistry
 from .review import EvidenceAssembler, ReviewPromptBuilder, ReviewPromptPackage
+from .evidence_capture import EvidenceCaptureService
 from .review_docx import OpinionDocumentBuilder
 from .storage import ArtifactDeletionResult, DocumentArtifactStore, LocalDocumentArtifactStore
 from .poc_bootstrap import ColabPocBundle, build_colab_poc, build_colab_poc_from_env
@@ -81,6 +85,7 @@ __all__ = [
     "EncoderBackend",
     "EncoderRegistry",
     "EvidenceAssembler",
+    "EvidenceCaptureService",
     "EvidenceRecord",
     "EvidenceTemplateGenerator",
     "ExtractedBlock",
@@ -134,6 +139,9 @@ __all__ = [
     "ShardedAttachmentRetriever",
     "ShardedNpzVectorStore",
     "TextGenerator",
+    "StreamingTextGenerator",
+    "MultimodalGenerationConfig",
+    "TransformersMultimodalGenerator",
     "TransformersCpuGenerator",
     "UploadProcessor",
     "CpuGenerationConfig",

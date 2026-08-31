@@ -52,7 +52,7 @@ class FileStatus(str, Enum):
     @property
     def progress_stage(self) -> str:
         return {
-            FileStatus.UPLOADED: "파일적재",
+            FileStatus.UPLOADED: "업로드 완료",
             FileStatus.VALIDATING: "파일검증",
             FileStatus.PARSING: "파일해석",
             FileStatus.INDEXING: "벡터임베딩",
@@ -65,7 +65,7 @@ class FileStatus(str, Enum):
     @property
     def default_progress(self) -> int:
         return {
-            FileStatus.UPLOADED: 15,
+            FileStatus.UPLOADED: 0,
             FileStatus.VALIDATING: 25,
             FileStatus.PARSING: 45,
             FileStatus.INDEXING: 70,

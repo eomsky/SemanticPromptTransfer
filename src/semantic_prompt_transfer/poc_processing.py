@@ -25,6 +25,8 @@ class ExtractedBlock:
     text: str
     page: int | None = None
     location: str | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    page_size: tuple[float, float] | None = None
 
 
 class PocDocumentExtractor:
@@ -48,15 +50,30 @@ class PocDocumentExtractor:
     @staticmethod
     def _pdf(path: Path) -> list[ExtractedBlock]:
         try:
-            from pypdf import PdfReader
+            import fitz
         except ImportError as exc:  # pragma: no cover - optional POC dependency
-            raise RuntimeError("install semantic-prompt-transfer[poc] for PDF uploads") from exc
-        reader = PdfReader(str(path))
-        blocks = []
-        for page_number, page in enumerate(reader.pages, start=1):
-            text = (page.extract_text() or "").strip()
-            if text:
-                blocks.append(ExtractedBlock(text=text, page=page_number, location=f"page:{page_number}"))
+            raise RuntimeError("install semantic-prompt-transfer[poc] for PDF coordinate extraction") from exc
+        document = fitz.open(str(path))
+        blocks: list[ExtractedBlock] = []
+        try:
+            for page_index, page in enumerate(document, start=1):
+                page_size = (float(page.rect.width), float(page.rect.height))
+                for block in page.get_text("blocks", sort=True):
+                    x0, y0, x1, y1, text = block[:5]
+                    normalized = " ".join(str(text or "").split())
+                    if not normalized:
+                        continue
+                    blocks.append(
+                        ExtractedBlock(
+                            text=normalized,
+                            page=page_index,
+                            location=f"page:{page_index}:block:{len(blocks) + 1}",
+                            bbox=(float(x0), float(y0), float(x1), float(y1)),
+                            page_size=page_size,
+                        )
+                    )
+        finally:
+            document.close()
         return blocks
 
     @staticmethod
@@ -198,6 +215,8 @@ class PocUploadProcessor:
                     "document_kind": DocumentKind.ATTACHMENT.value,
                     "pages": [block.page] if block.page else [],
                     "source_location": block.location,
+                    "bbox": list(block.bbox) if block.bbox else None,
+                    "page_size": list(block.page_size) if block.page_size else None,
                     "block_index": block_index,
                     "part_index": part_index,
                 }
@@ -226,17 +245,20 @@ class PocUploadProcessor:
             if self.credit_template is None:
                 raise RuntimeError("credit-report template is not configured")
             progress(FileStatus.PARSING, 55, "신용조사서 정형 셀을 읽고 있습니다.")
-            parsed = CreditReportParser().parse(
-                source_path,
-                self.credit_template,
-                DocumentScope(
-                    scope.tenant_id,
-                    scope.case_id,
-                    scope.document_id,
-                    source_filename=source_path.name,
-                    document_kind=DocumentKind.CREDIT_REPORT.value,
-                ),
+            parser_scope = DocumentScope(
+                scope.tenant_id,
+                scope.case_id,
+                scope.document_id,
+                source_filename=source_path.name,
+                document_kind=DocumentKind.CREDIT_REPORT.value,
             )
+            parser = CreditReportParser()
+            try:
+                parsed = parser.parse_semantic_workbook(source_path, parser_scope)
+            except ValueError as exc:
+                if "missing operational credit-report sheets" not in str(exc):
+                    raise
+                parsed = parser.parse(source_path, self.credit_template, parser_scope)
             self._write_json(derived / "credit_facts.json", parsed.to_dict())
             self.vector_store.delete_document(scope)
             progress(FileStatus.READY, 100, "신용조사서 기초자료 적재를 완료했습니다.")

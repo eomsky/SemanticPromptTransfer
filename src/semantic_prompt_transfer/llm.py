@@ -4,12 +4,16 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 from urllib import error, parse, request
 
 
 class TextGenerator(Protocol):
     def generate(self, messages: list[dict[str, str]]) -> str: ...
+
+
+class StreamingTextGenerator(TextGenerator, Protocol):
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]: ...
 
 
 @dataclass(frozen=True)
@@ -189,6 +193,92 @@ class TransformersCpuGenerator:
         text = self._tokenizer.decode(generated[0][input_length:], skip_special_tokens=True).strip()
         if not text:
             raise RuntimeError("CPU language model returned empty text")
+        return text
+
+
+@dataclass(frozen=True)
+class MultimodalGenerationConfig:
+    """Generation settings for a Gemma-style processor/model already loaded on GPU."""
+
+    max_new_tokens: int = 1200
+    repetition_penalty: float = 1.05
+    enable_thinking: bool = False
+
+
+class TransformersMultimodalGenerator:
+    """Adapter for AutoProcessor + AutoModelForMultimodalLM in the same Colab."""
+
+    def __init__(self, processor: Any, model: Any, config: MultimodalGenerationConfig | None = None) -> None:
+        self.processor = processor
+        self.model = model
+        self.config = config or MultimodalGenerationConfig()
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+
+    @staticmethod
+    def _structured(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": str(message.get("role") or "user"),
+                "content": [{"type": "text", "text": str(message.get("content") or "")}],
+            }
+            for message in messages
+        ]
+
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        import gc
+        import threading
+        import torch
+        from transformers import TextIteratorStreamer
+
+        inputs = self.processor.apply_chat_template(
+            self._structured(messages),
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            enable_thinking=self.config.enable_thinking,
+        ).to(self.model.device)
+        streamer = TextIteratorStreamer(
+            self.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True,
+            timeout=120.0,
+        )
+        errors: list[BaseException] = []
+
+        def run_generation() -> None:
+            try:
+                with torch.inference_mode():
+                    self.model.generate(
+                        **inputs,
+                        streamer=streamer,
+                        max_new_tokens=self.config.max_new_tokens,
+                        do_sample=False,
+                        repetition_penalty=self.config.repetition_penalty,
+                        use_cache=True,
+                    )
+            except BaseException as exc:  # propagated after the streamer closes or times out
+                errors.append(exc)
+
+        worker = threading.Thread(target=run_generation, daemon=True)
+        worker.start()
+        try:
+            for token_text in streamer:
+                if token_text:
+                    yield token_text
+        finally:
+            worker.join(timeout=10)
+            del inputs
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        if errors:
+            raise RuntimeError(f"multimodal generation failed: {errors[0]}") from errors[0]
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        text = "".join(self.stream(messages)).strip()
+        if not text:
+            raise RuntimeError("multimodal language model returned empty text")
         return text
 
 

@@ -68,10 +68,13 @@ class EvidenceAssembler:
                         "local_chunk_id": metadata.get("local_chunk_id") or hit.get("chunk_id"),
                         "logical_table_id": metadata.get("logical_table_id"),
                         "score": hit.get("score"),
+                        "bbox": metadata.get("bbox"),
+                        "page_size": metadata.get("page_size"),
+                        "source_location": metadata.get("source_location"),
                     },
                 )
             )
-        rows.sort(key=lambda row: (int(row.source_tier), row.evidence_id))
+        rows.sort(key=lambda row: int(row.source_tier))
         return rows
 
 
@@ -115,7 +118,8 @@ class ReviewPromptBuilder:
             "TIER_1 신용조사서 항목자료, TIER_2 신용조사서 공통자료, "
             "TIER_3 기타 첨부파일 순서다. FEW SHOT은 문체와 분석 구조만 참고하며 "
             "그 안의 수치, 회사명, 기간 또는 사실을 현재 심사건에 사용하지 않는다. "
-            "수치·단위·기간을 변형하지 않고 핵심 주장마다 evidence_id를 표시한다. "
+            "수치·단위·기간을 변형하지 않고 핵심 주장 문장 끝마다 근거를 "
+            "[evidence_id] 형식으로 표시한다. 제공되지 않은 evidence_id는 만들지 않는다. "
             "자료가 충돌하면 신용조사서를 기준으로 하고 차이를 명시한다."
         )
         example_blocks = []
@@ -155,7 +159,8 @@ class ReviewPromptBuilder:
             + ("\n\n".join(example_blocks) if example_blocks else "선택된 예시 없음")
             + "\n\n[CURRENT_CASE_EVIDENCE]\n"
             + ("\n\n".join(evidence_blocks) if evidence_blocks else "현재 근거 없음")
-            + "\n\n[작성요청]\n현황, 주요 원인, 위험·완화요인 및 향후전망을 근거 중심으로 작성하라."
+            + "\n\n[작성요청]\n현황, 주요 원인, 위험·완화요인 및 향후전망을 근거 중심으로 작성하라. "
+            "각 핵심 문장 끝에는 반드시 [CR_…] 또는 [ATT_…] 근거를 붙이고 최종 심사의견만 출력하라."
         )
         return ReviewPromptPackage(
             schema_version="review-prompt-1.0",

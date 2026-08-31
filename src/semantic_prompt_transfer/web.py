@@ -1,5 +1,7 @@
 import hashlib
+import json
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
@@ -26,6 +28,12 @@ class ReviewJobStarter(Protocol):
     def start(self, tenant_id: str, case_id: str) -> dict[str, Any]: ...
 
     def run(self, job_id: str) -> Any: ...
+
+    def stream_events(self, job_id: str, after: int = 0) -> Iterator[dict[str, Any]]: ...
+
+    def get_evidence(self, job_id: str, evidence_id: str) -> dict[str, Any]: ...
+
+    def capture_evidence(self, job_id: str, evidence_id: str) -> bytes: ...
 
 
 def create_fastapi_app(
@@ -55,7 +63,7 @@ def create_fastapi_app(
             UploadFile,
         )
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse
+        from fastapi.responses import FileResponse, Response, StreamingResponse
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("install semantic-prompt-transfer[poc]") from exc
 
@@ -149,7 +157,6 @@ def create_fastapi_app(
         except Exception:
             source_path.unlink(missing_ok=True)
             raise
-        background_tasks.add_task(process_upload, scope, source_path, document_kind)
         return row
 
     @app.get("/api/v1/runtime/health")
@@ -324,6 +331,63 @@ def create_fastapi_app(
     def review_status(job_id: str, x_poc_token: str | None = Header(None)):
         authorize_job(job_id, x_poc_token)
         return application.get_review_job(job_id)
+
+    @app.get("/api/v1/review-jobs/{job_id}/stream")
+    def review_stream(
+        job_id: str,
+        after: int = Query(0, ge=0),
+        x_poc_token: str | None = Header(None),
+    ):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+
+        def lines():
+            for event in review_jobs.stream_events(job_id, after=after):
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+        return StreamingResponse(
+            lines(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/v1/review-jobs/{job_id}/evidence/{evidence_id}")
+    def evidence_metadata(
+        job_id: str,
+        evidence_id: str,
+        x_poc_token: str | None = Header(None),
+    ):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+        try:
+            return review_jobs.get_evidence(job_id, evidence_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="evidence not found") from exc
+        except (PermissionError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/review-jobs/{job_id}/evidence/{evidence_id}/capture.png")
+    def evidence_capture(
+        job_id: str,
+        evidence_id: str,
+        x_poc_token: str | None = Header(None),
+    ):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+        try:
+            payload = review_jobs.capture_evidence(job_id, evidence_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="evidence not found") from exc
+        except (PermissionError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return Response(
+            payload,
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
 
     @app.get("/api/v1/review-jobs/{job_id}/opinion.docx")
     def download_opinion(job_id: str, x_poc_token: str | None = Header(None)):

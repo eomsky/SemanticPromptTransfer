@@ -84,6 +84,11 @@ class ReviewGenerationOrchestrator:
         llm: LLMClient | None,
         output_path: str | Path,
         progress_callback: Callable[[ProgressEvent], None] | None = None,
+        token_callback: Callable[[ReviewItem, str], None] | None = None,
+        section_callback: Callable[
+            [ReviewItem, str, list[dict[str, Any]], dict[str, Any]], None
+        ]
+        | None = None,
         job_id: str | None = None,
     ) -> ReviewGenerationResult:
         generator = llm or self.llm
@@ -116,6 +121,12 @@ class ReviewGenerationOrchestrator:
             sections: list[ReviewSectionDraft] = []
             prompts: list[ReviewPromptPackage] = []
             for index, item in enumerate(ReviewItem.ordered()):
+                emit(
+                    JobStage.ITEM_GENERATION,
+                    32 + index * 12,
+                    f"{item.value}. {item.title} 생성 중 ({index + 1}/5)",
+                    item,
+                )
                 query = self.query_profiles.get(item).build(case)
                 retrieval = self.attachment_retriever.search(
                     query,
@@ -130,7 +141,20 @@ class ReviewGenerationOrchestrator:
                 )
                 prompt = self.prompt_builder.build(case, item, query, evidence, examples)
                 prompts.append(prompt)
-                text = generator.generate(prompt.messages)
+                stream = getattr(generator, "stream", None)
+                if callable(stream):
+                    pieces: list[str] = []
+                    for token_text in stream(prompt.messages):
+                        pieces.append(token_text)
+                        if token_callback:
+                            token_callback(item, token_text)
+                    text = "".join(pieces).strip()
+                else:
+                    text = generator.generate(prompt.messages)
+                    if token_callback:
+                        token_callback(item, text)
+                if not text:
+                    raise RuntimeError(f"item {item.value} generation returned empty text")
                 validation = self.validator.validate(text, evidence, examples)
                 if not validation.valid:
                     raise ReviewValidationError(
@@ -145,14 +169,21 @@ class ReviewGenerationOrchestrator:
                         validation=validation.to_dict(),
                     )
                 )
+                if section_callback:
+                    section_callback(
+                        item,
+                        text,
+                        prompt.evidence,
+                        validation.to_dict(),
+                    )
                 emit(
                     JobStage.ITEM_GENERATION,
-                    40 + index * 10,
-                    f"{item.value} 항목 생성과 검증을 완료했습니다.",
+                    42 + index * 12,
+                    f"{item.value}. {item.title} 생성 완료 ({index + 1}/5)",
                     item,
                 )
 
-            emit(JobStage.VALIDATING, 90, "다섯 항목의 항목별 근거·수치 검증 결과를 집계했습니다.")
+            emit(JobStage.VALIDATING, 92, "다섯 항목의 근거 연결 정보를 정리했습니다.")
             target = self.document_builder.build(case, sections, output_path)
             emit(JobStage.DOCX_RENDER, 98, "심사의견 Word 파일을 생성했습니다.")
             if self.registry:

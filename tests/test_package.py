@@ -438,7 +438,8 @@ class OperationalPackageTests(unittest.TestCase):
                 size_bytes=source.stat().st_size,
                 storage_uri=str(source),
             )
-            self.assertEqual(row["progress_stage"], "파일적재")
+            self.assertEqual(row["progress_stage"], "업로드 완료")
+            self.assertEqual(row["progress_percent"], 0)
             for status in (
                 FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING, FileStatus.READY
             ):
@@ -566,7 +567,8 @@ class OperationalPackageTests(unittest.TestCase):
             "신용조사서",
             "양식 다운로드",
             "기타 첨부자료",
-            "심사의견 다운로드",
+            "심사의견 생성",
+            "Word 다운로드",
             "file-x",
             "/api/v1/cases/",
             "/api/v1/templates/credit-report.xlsx",

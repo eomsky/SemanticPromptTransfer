@@ -57,6 +57,7 @@ def build_colab_poc(
     session_ttl_seconds: int = 4 * 60 * 60,
     runtime_lifetime_seconds: int = 12 * 60 * 60,
     encoder: EncoderBackend | None = None,
+    generator: TextGenerator | None = None,
     require_content_root: bool = True,
 ) -> ColabPocBundle:
     runtime = EphemeralColabRuntime(
@@ -76,7 +77,11 @@ def build_colab_poc(
         few_shots = FewShotSelector(
             FewShotRegistry.from_json(few_shot_path or _example_path("few_shots.json"))
         )
-        if llm_base_url:
+        if generator is not None:
+            # Preserve a local generator's streaming interface. Deterministic
+            # citation/numeric validation remains in the orchestrator.
+            text_generator: TextGenerator = generator
+        elif llm_base_url:
             primary = OpenAICompatibleHttpGenerator(
                 RemoteGenerationConfig(
                     base_url=llm_base_url,
@@ -84,9 +89,9 @@ def build_colab_poc(
                     api_key=llm_api_key,
                 )
             )
-            generator: TextGenerator = FallbackGenerator(primary, EvidenceTemplateGenerator())
+            text_generator = FallbackGenerator(primary, EvidenceTemplateGenerator())
         else:
-            generator = EvidenceTemplateGenerator()
+            text_generator = EvidenceTemplateGenerator()
         upload_processor = PocUploadProcessor(
             embedding_encoder,
             runtime.vectors,
@@ -98,7 +103,8 @@ def build_colab_poc(
             runtime,
             retriever,
             few_shots,
-            generator,
+            text_generator,
+            upload_processor,
         )
         sessions = PocIdentityService(
             runtime.root / "metadata" / "identity.sqlite",
@@ -121,7 +127,7 @@ def build_colab_poc(
             sessions,
             upload_processor,
             review_jobs,
-            generator,
+            text_generator,
             app,
         )
     except Exception:

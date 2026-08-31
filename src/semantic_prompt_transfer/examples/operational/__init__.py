@@ -1,1 +1,1 @@
-"""Operational v0.22 examples."""
+"""Operational v0.24 examples."""
