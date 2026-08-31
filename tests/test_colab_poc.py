@@ -83,9 +83,9 @@ class ColabPocTests(unittest.TestCase):
         self.assertEqual(code.count("FEW_SHOT_3 ="), 1)
         self.assertNotIn("TwoPassReviewGenerator", code)
 
-    def test_v025_notebook_uses_moe_vllm_gpu_embedding_and_anonymous_scope(self):
+    def test_v026_notebook_uses_moe_vllm_gpu_embedding_and_anonymous_scope(self):
         root = Path(__file__).resolve().parents[1]
-        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb"
+        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.26_COLAB_LAUNCHER.ipynb"
         notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
         code = "\n".join(
             "".join(cell.get("source", []))
@@ -116,8 +116,28 @@ class ColabPocTests(unittest.TestCase):
             self.assertGreater(len(cell), 2000)
         self.assertIn("max_new_tokens=1400", code)
         self.assertIn("max_continuations=2", code)
+        self.assertIn('RELEASE = "v0.26"', code)
+        self.assertIn('PACKAGE_VERSION = "0.26.0"', code)
         self.assertIn('secret("NGROK_AUTHTOKEN")', code)
         self.assertLess(code.index("ngrok.connect"), code.index("loading vLLM"))
+
+    def test_v025_and_v026_assets_are_versioned_independently(self):
+        root = Path(__file__).resolve().parents[1] / "notebooks"
+        v025 = json.loads(
+            (root / "SemanticPromptTransfer_v0.25_COLAB_ASSETS.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        v026 = json.loads(
+            (root / "SemanticPromptTransfer_v0.26_COLAB_ASSETS.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual((v025["release"], v025["package_version"]), ("v0.25", "0.25.0"))
+        self.assertEqual((v026["release"], v026["package_version"]), ("v0.26", "0.26.0"))
+        self.assertTrue(v025["assets"][0]["source"].startswith("versions/v0.25/"))
+        self.assertTrue(v026["assets"][0]["source"].startswith("versions/v0.26/"))
+        self.assertNotEqual(v025["assets"][0]["sha256"], v026["assets"][0]["sha256"])
 
     def test_one_click_colab_notebook_has_single_executable_cell(self):
         root = Path(__file__).resolve().parents[1]

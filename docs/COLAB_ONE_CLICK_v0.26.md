@@ -1,4 +1,4 @@
-# SemanticPromptTransfer v0.25 Colab 운영
+# SemanticPromptTransfer v0.26 Colab 운영
 
 ## 준비
 
@@ -11,19 +11,19 @@ Google Drive에는 다음 두 파일이 있어야 한다.
 
 ```text
 MyDrive/SemanticPromptTransfer/
-├── runtime-assets/v0.25/SemanticPromptTransfer_v0.25_COLAB_ASSETS.json
-└── versions/v0.25/semantic_prompt_transfer-0.25.0-py3-none-any.whl
+├── runtime-assets/v0.26/SemanticPromptTransfer_v0.26_COLAB_ASSETS.json
+└── versions/v0.26/semantic_prompt_transfer-0.26.0-py3-none-any.whl
 ```
 
-매니페스트는 wheel의 크기와 SHA-256을 검사한다. v0.25는 GPU E5를
+매니페스트는 wheel의 크기와 SHA-256을 검사한다. v0.26는 GPU E5를
 Hugging Face에서 로드하므로 이전 ONNX 압축 자산은 필요하지 않다.
 
 ## 실행
 
-1. `SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb`를 Colab에서 연다.
+1. `SemanticPromptTransfer_v0.26_COLAB_LAUNCHER.ipynb`를 Colab에서 연다.
 2. 런타임 유형을 A100 GPU로 선택한다.
 3. 설정 셀, FEW SHOT 1~3 셀, 운영 개시 셀을 위에서 아래로 실행한다.
-4. `vLLM ready`와 `ready: package=0.25.0` 로그를 확인한다.
+4. `vLLM ready`와 `ready: package=0.26.0` 로그를 확인한다.
 5. 출력된 **심사 화면 바로 열기** 링크를 연다.
 
 세 FEW SHOT 셀에는 승인된 기본 사례가 입력되어 있다. 수정하지 않으면
@@ -42,6 +42,9 @@ Hugging Face에서 로드하므로 이전 ONNX 압축 자산은 필요하지 않
 - 신용조사서가 있더라도 첨부자료에 별도 컨텍스트 예산을 예약해
   사업보고서 근거가 입력 길이에서 밀려나지 않게 한다.
 - Annotated PDF 등 추가 산출물은 생성하지 않는다.
+- A~E 전체 스트림이 완료된 이후에만 후속 대화 입력창이 나타난다.
+- 후속 대화는 few-shot과 A~E 생성 형식을 사용하지 않으며, 완료된 심사의견,
+  업로드 근거자료와 같은 심사건의 누적 질문·답변을 문맥으로 사용한다.
 
 ## 생성 모델과 동시 접속
 
@@ -52,12 +55,14 @@ Hugging Face에서 로드하므로 이전 ONNX 압축 자산은 필요하지 않
 - GPU 메모리 사용률: 0.88
 - 최대 컨텍스트: 16,384토큰
 - 동시 시퀀스: 4
-- 항목별 출력 상한: 700토큰
+- 요청별 출력 상한: 1,400토큰
+- 길이 제한 종료 시 최대 2회 자동 이어쓰기 후 완결성 확인
 - 텍스트 전용 멀티모달 제한 및 비동기 스케줄링 사용
 
 한 사용자의 A~E는 순서대로 생성한다. 서로 다른 사용자의 요청은 vLLM이
 continuous batching하며, 4개를 넘는 요청은 자원이 생길 때까지 대기한다.
 GPU 임베딩은 메모리 충돌을 방지하기 위해 한 번에 하나씩 실행한다.
+후속 대화의 질문과 답변은 Colab 런타임 메모리에 심사건별로 누적된다.
 
 브라우저가 생성한 128비트 임의 ID를 `localStorage`에 보관하고 이 값을
 tenant/case 범위로 사용한다. 접속 IP를 ID로 쓰지 않으므로 동일 NAT·프록시
@@ -83,3 +88,4 @@ tenant/case 범위로 사용한다. 접속 IP를 ID로 쓰지 않으므로 동�
   삭제된다.
 - 실제 운영 전에는 SSO/RBAC, 악성파일 검사, 요청 제한, 감사로그와 지속형
   저장소를 추가해야 한다.
+

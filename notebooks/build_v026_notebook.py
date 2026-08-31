@@ -1,4 +1,4 @@
-"""Build the v0.25 anonymous, vLLM-backed Colab launcher."""
+"""Build the v0.26 contextual-chat Colab launcher."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "notebooks" / "SemanticPromptTransfer_v0.24_COLAB_LAUNCHER.ipynb"
-TARGET = ROOT / "notebooks" / "SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb"
+SOURCE = ROOT / "notebooks" / "SemanticPromptTransfer_v0.25_COLAB_LAUNCHER.ipynb"
+TARGET = ROOT / "notebooks" / "SemanticPromptTransfer_v0.26_COLAB_LAUNCHER.ipynb"
 FEW_SHOTS = ROOT / "notebooks" / "few_shot_defaults_v1.json"
 
 
@@ -55,27 +55,11 @@ defaults = json.loads(FEW_SHOTS.read_text(encoding="utf-8"))["few_shots"]
 
 setup = "".join(notebook["cells"][1]["source"])
 for old, new in (
-    ("v0.24", "v0.25"),
-    ("0.24.0", "0.25.0"),
-    ("spt_bootstrap_v024", "spt_bootstrap_v025"),
+    ("v0.25", "v0.26"),
+    ("0.25.0", "0.26.0"),
+    ("spt_bootstrap_v025", "spt_bootstrap_v026"),
 ):
     setup = setup.replace(old, new)
-setup = setup.replace(
-    "verifies and stages the approved package/model assets under /content, starts\n"
-    "the FastAPI application and packaged HTML on one port, and exposes one ngrok\n"
-    "URL protected by HTTP Basic Auth. User uploads and vectors never write back to\n",
-    "verifies and stages the approved package wheel under /content, starts the\n"
-    "FastAPI application and packaged HTML on one port, and exposes one ngrok URL\n"
-    "without application or tunnel login. User uploads and vectors never write back to\n",
-)
-setup = setup.replace("materialize_model(manifest, staged, stage_root)\n", "")
-setup = setup.replace(
-    'install_runtime(staged["wheel"])\n',
-    'install_runtime(staged["wheel"])\n\n'
-    'log("installing Korean document font")\n'
-    'subprocess.run(["apt-get", "update", "-qq"], check=True)\n'
-    'subprocess.run(["apt-get", "install", "-y", "-qq", "fonts-noto-cjk"], check=True)\n',
-)
 
 runtime = r'''ngrok_token = secret("NGROK_AUTHTOKEN")
 if not ngrok_token:
@@ -219,7 +203,7 @@ for _ in range(1800):
     time.sleep(1)
 if not vllm_ready:
     raise RuntimeError("vLLM did not become healthy within 30 minutes")
-log("vLLM ready · streaming generation · maximum 700 tokens per item")
+log("vLLM ready · streaming generation · 1400 tokens + automatic continuation")
 
 # A100의 남은 메모리에서 작은 E5를 상주시켜 임베딩을 GPU 배치 처리합니다.
 embedding_encoder = E5GpuEncoder(
@@ -234,7 +218,8 @@ local_generator = OpenAICompatibleHttpGenerator(
         model=MODEL_ID,
         api_key=vllm_api_key,
         timeout_seconds=300,
-        max_new_tokens=700,
+        max_new_tokens=1400,
+        max_continuations=2,
         temperature=0.0,
         allow_insecure_http=True,
     )
@@ -340,7 +325,7 @@ except Exception:
 '''
 
 notebook["cells"][0]["source"] = source_lines(
-    "# SemanticPromptTransfer v0.25 — 익명 다중사용자 vLLM 운영\n\n"
+    "# SemanticPromptTransfer v0.26 — 맥락형 심사지원 에이전트 운영\n\n"
     "위에서부터 모든 셀을 실행합니다. 로그인과 ngrok 공통 비밀번호 없이 HTML이 바로 열립니다. "
     "브라우저별 난수 ID로 파일·벡터·생성 작업을 분리합니다.\n\n"
     "첨부된 우수 심사역 FEW SHOT 1~3이 기본값으로 입력되어 있으며 수정할 수 있습니다. "

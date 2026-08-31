@@ -10,8 +10,8 @@
       "role": "wheel",
       "source": "versions/v0.25/semantic_prompt_transfer-0.25.0-py3-none-any.whl",
       "target": "package/semantic_prompt_transfer-0.25.0-py3-none-any.whl",
-      "size": 176210,
-      "sha256": "7102aa7416f56acb5a7e45440cf875e122f92661439028798d8325193fdc737d"
+      "size": 171834,
+      "sha256": "01f76379388d237e2e9d577c57555e9939fee684ffebe6861d101de55dcaeaba"
     }
   ]
 }
