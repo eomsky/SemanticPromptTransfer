@@ -6,6 +6,10 @@ extracted facts, L0 vectors, user registrations, progress, and generated Word
 files live only in the Colab runtime and are removed when that runtime closes.
 Google Drive is not mounted by the application.
 
+For conversation-to-conversation continuity, current decisions, verified Drive
+locations, version history, and remaining work are consolidated in
+[`docs/PROJECT_HANDOFF_v0.22.md`](docs/PROJECT_HANDOFF_v0.22.md).
+
 ## POC flow
 
 1. A user signs up with department, name, and employee number.
