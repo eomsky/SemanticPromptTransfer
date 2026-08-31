@@ -54,6 +54,8 @@ def build_colab_poc(
     root: str | Path = "/content/spt_poc_runtime",
     credit_template_path: str | Path | None = None,
     few_shot_path: str | Path | None = None,
+    demo_credit_report_path: str | Path | None = None,
+    demo_attachment_paths: tuple[str | Path, ...] = (),
     allowed_origins: tuple[str, ...] = (),
     session_ttl_seconds: int = 4 * 60 * 60,
     runtime_lifetime_seconds: int = 12 * 60 * 60,
@@ -124,6 +126,8 @@ def build_colab_poc(
             allowed_origins=allowed_origins,
             download_root=runtime.root,
             credit_template_download=_example_path("credit_report_sample_template.xlsx"),
+            demo_credit_report_path=demo_credit_report_path,
+            demo_attachment_paths=demo_attachment_paths,
         )
         return ColabPocBundle(
             runtime,
@@ -149,6 +153,11 @@ def build_colab_poc_from_env() -> ColabPocBundle:
         for value in os.environ.get("SPT_ALLOWED_ORIGINS", "").split(",")
         if value.strip()
     )
+    demo_attachments = tuple(
+        value.strip()
+        for value in os.environ.get("SPT_DEMO_ATTACHMENTS", "").split(",")
+        if value.strip()
+    )
     return build_colab_poc(
         model_dir=os.environ["SPT_MODEL_DIR"],
         llm_base_url=os.environ.get("SPT_LLM_BASE_URL"),
@@ -156,6 +165,8 @@ def build_colab_poc_from_env() -> ColabPocBundle:
         root=os.environ.get("SPT_POC_ROOT", "/content/spt_poc_runtime"),
         credit_template_path=os.environ.get("SPT_CREDIT_TEMPLATE"),
         few_shot_path=os.environ.get("SPT_FEW_SHOTS"),
+        demo_credit_report_path=os.environ.get("SPT_DEMO_CREDIT_REPORT"),
+        demo_attachment_paths=demo_attachments,
         allowed_origins=origins,
         session_ttl_seconds=int(os.environ.get("SPT_SESSION_TTL_SECONDS", str(4 * 60 * 60))),
         runtime_lifetime_seconds=int(

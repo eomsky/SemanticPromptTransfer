@@ -33,6 +33,7 @@ class OperationalApplicationService:
             "progress_stage": document.status.progress_stage,
             "processing_message": document.processing_message,
             "status": document.status.value,
+            "is_demo": document.document_id.startswith("demo-"),
             "can_delete": document.status not in {FileStatus.DELETING, FileStatus.DELETED},
         }
 

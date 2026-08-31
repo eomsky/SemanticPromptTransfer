@@ -1,6 +1,6 @@
-# semantic-prompt-transfer 0.26.4
+# semantic-prompt-transfer 0.26.5
 
-SemanticPromptTransfer v0.26.4 is a time-boxed Colab POC implementation for the
+SemanticPromptTransfer v0.26.5 is a time-boxed Colab POC implementation for the
 credit-review workflow. The browser remains a thin HTML client. Uploads,
 extracted facts, L0 vectors, progress, and generated Word files live only in
 the Colab runtime and are removed when that runtime closes. Google Drive is
@@ -9,6 +9,10 @@ mounted only by the launcher to stage approved runtime assets.
 For conversation-to-conversation continuity, current decisions, verified Drive
 locations, version history, and remaining work are consolidated in
 [`docs/PROJECT_HANDOFF_v0.22.md`](docs/PROJECT_HANDOFF_v0.22.md).
+
+## v0.26.5 demo-ready start
+
+Each new anonymous browser case receives ephemeral copies of `신용조사서_ABC기업_v1.0.xlsx` and `[ABC기업]사업보고서(2026.03.23).pdf` from the owner Drive `demo-assets` folder. They remain `UPLOADED` with zero vectors until **심사의견 생성** is clicked. Filenames download the case-owned copy; `×` deletes it without touching the Drive original, and a deleted sample is not re-seeded into the same case.
 
 ## POC flow
 
@@ -58,7 +62,7 @@ that a production Vector DB adapter must preserve.
 ## Colab start
 
 The operating notebook is
-`notebooks/SemanticPromptTransfer_v0.26.4_COLAB_LAUNCHER.ipynb`. It provides three
+`notebooks/SemanticPromptTransfer_v0.26.5_COLAB_LAUNCHER.ipynb`. It provides three
 pre-populated editable few-shot cells, mounts the owner's Drive, verifies the
 approved wheel, starts `google/gemma-4-26B-A4B-it` with vLLM on one A100 80 GB,
 loads a batched GPU E5 encoder, serves the packaged HTML and API on one port,
@@ -124,13 +128,13 @@ GET    /api/v1/review-jobs/{job_id}/opinion.docx
 POST   /api/v1/review-jobs/{job_id}/chat/stream
 ```
 
-The v0.26.4 notebook runs the API in anonymous POC mode. The packaged server still
+The v0.26.5 notebook runs the API in anonymous POC mode. The packaged server still
 retains the optional identity routes for non-anonymous deployments, but the
 notebook HTML neither calls them nor sends `X-POC-Token`.
 
 ## Operational boundary
 
-v0.26.4 is suitable for a scheduled single-Colab POC. It is not yet a production
+v0.26.5 is suitable for a scheduled single-Colab POC. It is not yet a production
 bank deployment. Production still requires enterprise SSO/RBAC, password policy,
 malware scanning, encrypted persistent object storage, a managed Vector DB,
 distributed jobs, audit retention, runtime recovery, official Excel and Word

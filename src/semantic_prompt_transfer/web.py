@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -53,6 +54,8 @@ def create_fastapi_app(
     max_upload_bytes: int = 50 * 1024 * 1024,
     download_root: str | Path | None = None,
     credit_template_download: str | Path | None = None,
+    demo_credit_report_path: str | Path | None = None,
+    demo_attachment_paths: Sequence[str | Path] = (),
 ):
     """Create the time-boxed POC API while preserving the v0.21 route contract."""
     try:
@@ -79,6 +82,23 @@ def create_fastapi_app(
         if credit_template_download
         else None
     )
+    demo_credit = (
+        Path(demo_credit_report_path).expanduser().resolve()
+        if demo_credit_report_path
+        else None
+    )
+    demo_attachments = tuple(
+        Path(value).expanduser().resolve() for value in demo_attachment_paths
+    )
+    demo_specs: list[tuple[DocumentKind, Path]] = []
+    if demo_credit is not None:
+        demo_specs.append((DocumentKind.CREDIT_REPORT, demo_credit))
+    demo_specs.extend((DocumentKind.ATTACHMENT, path) for path in demo_attachments)
+    for _, source in demo_specs:
+        if not source.is_file():
+            raise FileNotFoundError(f"demo source is missing: {source}")
+    demo_seed_lock = threading.RLock()
+    demo_seeded_cases: set[tuple[str, str]] = set()
     app = FastAPI(title="SemanticPromptTransfer Colab POC API", version=PACKAGE_VERSION)
     if allowed_origins:
         app.add_middleware(
@@ -102,6 +122,40 @@ def create_fastapi_app(
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         return session.tenant_id, session.case_id, session
+
+    def ensure_demo_seeded(tenant_id: str, case_id: str) -> list[dict[str, Any]]:
+        if not demo_specs:
+            return []
+        key = (tenant_id, case_id)
+        with demo_seed_lock:
+            if key in demo_seeded_cases:
+                return []
+            if application.registry.list_documents(tenant_id, case_id):
+                demo_seeded_cases.add(key)
+                return []
+            seeded: list[dict[str, Any]] = []
+            for document_kind, source in demo_specs:
+                payload = source.read_bytes()
+                document_id = f"demo-{document_kind.value}-{uuid.uuid4().hex}"
+                scope = DocumentScope(tenant_id, case_id, document_id)
+                stored = storage.put(scope, source.name, payload)
+                try:
+                    seeded.append(
+                        application.register_upload(
+                            scope,
+                            filename=source.name,
+                            document_kind=document_kind,
+                            size_bytes=len(payload),
+                            storage_uri=str(stored),
+                            source_hash=hashlib.sha256(payload).hexdigest(),
+                            derived_uri=str(storage.derived_path(scope)),
+                        )
+                    )
+                except Exception:
+                    stored.unlink(missing_ok=True)
+                    raise
+            demo_seeded_cases.add(key)
+            return seeded
 
     def process_upload(
         scope: DocumentScope,
@@ -283,7 +337,31 @@ def create_fastapi_app(
         tenant, case, _ = authorize(
             x_poc_token, tenant_id=tenant_id, case_id=case_id
         )
+        ensure_demo_seeded(tenant, case)
         return application.list_uploads(tenant, case)
+
+    @app.get("/api/v1/cases/{case_id}/documents/{document_id}/download")
+    def download_document(
+        case_id: str,
+        document_id: str,
+        tenant_id: str | None = Query(None),
+        x_poc_token: str | None = Header(None),
+    ):
+        tenant, case, _ = authorize(
+            x_poc_token, tenant_id=tenant_id, case_id=case_id
+        )
+        try:
+            document = application.registry.get_document(tenant, case, document_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="document not found") from exc
+        if document.status is FileStatus.DELETED or not document.storage_uri:
+            raise HTTPException(status_code=404, detail="document not found")
+        source = Path(document.storage_uri).expanduser().resolve()
+        if not source.is_relative_to(storage.root):
+            raise HTTPException(status_code=409, detail="document path escaped runtime storage")
+        if not source.is_file():
+            raise HTTPException(status_code=404, detail="document file is missing")
+        return FileResponse(source, filename=document.filename)
 
     @app.delete("/api/v1/cases/{case_id}/documents/{document_id}")
     def delete_document(

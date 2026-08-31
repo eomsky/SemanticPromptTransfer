@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.5 - 2026-09-01
+
+- Added per-anonymous-case preload of ABC기업 credit-report and business-report demo files from owner Drive.
+- Demo files remain UPLOADED with zero vectors until review generation starts; no parsing or embedding occurs on page load.
+- Added scope-bound source-file download by clicking the displayed filename.
+- Deleting a demo copy does not delete the Drive original and does not re-seed the same case after refresh.
+- Kept the one-time STX→ABC PDF anonymization outside application and repository code.
+
 ## 0.26.4 - 2026-09-01
 
 - Replaced terminal validation failures with a non-failing grounded repair/fallback pipeline.
