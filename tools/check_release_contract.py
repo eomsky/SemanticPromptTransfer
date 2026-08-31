@@ -27,8 +27,11 @@ def main() -> None:
     checks = {
         "pyproject_runtime_version_match": pyproject_version == runtime_version,
         "changelog_has_version": f"## {runtime_version}" in (root / "CHANGELOG.md").read_text(encoding="utf-8"),
-        "requirements_has_version": runtime_version in (root / "docs/REQUIREMENTS_v0.21.md").read_text(encoding="utf-8"),
+        "requirements_has_version": runtime_version
+        in (root / "docs/REQUIREMENTS_v0.22.md").read_text(encoding="utf-8"),
         "html_source_exists": (root / "src/semantic_prompt_transfer/examples/operational/credit_review_upload_demo.html").is_file(),
+        "credit_template_exists": (root / "src/semantic_prompt_transfer/examples/operational/credit_report_sample_template.xlsx").is_file(),
+        "poc_server_exists": (root / "src/semantic_prompt_transfer/poc_server.py").is_file(),
         "release_management_exists": (root / "docs/RELEASE_MANAGEMENT.md").is_file(),
     }
 
@@ -41,6 +44,13 @@ def main() -> None:
         )
         checks["wheel_has_version_module"] = any(
             name.endswith("semantic_prompt_transfer/version.py") for name in names
+        )
+        checks["wheel_has_credit_template"] = any(
+            name.endswith("examples/operational/credit_report_sample_template.xlsx")
+            for name in names
+        )
+        checks["wheel_has_poc_server"] = any(
+            name.endswith("semantic_prompt_transfer/poc_server.py") for name in names
         )
 
     report = {

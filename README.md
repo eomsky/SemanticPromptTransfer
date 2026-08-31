@@ -1,97 +1,91 @@
-# semantic-prompt-transfer 0.21.0
+# semantic-prompt-transfer 0.22.0
 
-SemanticPromptTransfer v0.21 aligns the operational package with the approved minimal HTML interface. It adds file-level progress responses, verified file-and-vector deletion, optional HTTP routes, and a replaceable CPU text-generation module while preserving the v0.20 evidence contract and L0 RAG baseline.
+SemanticPromptTransfer v0.22 is a time-boxed Colab POC implementation for the
+credit-review workflow. The browser remains a thin HTML client. Uploads,
+extracted facts, L0 vectors, user registrations, progress, and generated Word
+files live only in the Colab runtime and are removed when that runtime closes.
+Google Drive is not mounted by the application.
 
-## Evidence contract
+## POC flow
 
-For each of the five fixed review items, evidence is assembled in this order:
+1. A user signs up with department, name, and employee number.
+2. For this limited POC, both login ID and initial password equal the employee
+   number. Password material is hashed in the temporary SQLite registry.
+3. The user downloads the credit-report Excel form, fills it, and uploads one
+   workbook.
+4. The user uploads multiple PDF, DOCX, XLSX, TXT, or Markdown attachments.
+5. Filenames appear inline. The `×` button deletes the server copy, derived
+   files, and all vectors for that document after a zero-count verification.
+6. The five fixed review items run and the completed opinion is downloaded as
+   DOCX.
 
-1. `TIER_1`: item-specific facts from the standardized credit-report Excel
-2. `TIER_2`: common facts from the same credit report
-3. `TIER_3`: retrieved evidence from other attachments
+The employee-number password rule is intentionally limited to a scheduled POC.
+It is not an enterprise authentication design.
 
-Approved few-shot examples are not evidence. They guide structure and tone only. The validator rejects numbers and forbidden identifiers that appear only in few-shot examples.
+## Source priority and few shots
 
-## Fixed review items
+Evidence is assembled separately for each review item in this fixed order:
 
-- A. 재무제표 주요계정(현황 및 향후전망)
-- B. 수익성(현황 및 향후전망)
-- C. 재무안정성 및 자산의 질(현황 및 향후전망)
-- D. 현금흐름 및 채무상환능력(현황 및 향후전망)
-- E. 주요 매출처 및 매출비중 변동 추이
+1. `TIER_1`: item-specific cells from the credit-report workbook
+2. `TIER_2`: common cells from the same workbook
+3. `TIER_3`: retrieved L0 evidence from attachments
 
-Each item has a versioned deterministic query profile. The profile adds relevant accounts, ratios, periods, risk factors, and outlook concepts to the visible item title.
+Approved few shots are selected by review item, loan type, industry code, and
+situation tags. They control structure and tone only; they are never treated as
+current-case evidence.
 
-## Credit-report parsing
+## Multiple PDFs in one logical vector database
 
-The credit report is a versioned structured input, not an ordinary attachment. Define the approved workbook mapping:
+`ShardedNpzVectorStore` presents one exact-search database while storing one
+atomic NPZ shard per uploaded document. Search always requires `tenant_id` and
+`case_id`. Replace and delete include `document_id`, so changing one PDF does not
+rewrite or remove another PDF. The backend implements the same scoped contract
+that a production Vector DB adapter must preserve.
 
-```python
-from semantic_prompt_transfer import CreditReportParser, CreditReportTemplate, DocumentScope
+## Colab start
 
-template = CreditReportTemplate.from_json("credit_report_template.json")
-scope = DocumentScope(
-    tenant_id="bank-a",
-    case_id="review-001",
-    document_id="credit-report",
-    source_filename="credit_report.xlsx",
-    document_kind="credit_report",
-)
-parsed = CreditReportParser().parse("credit_report.xlsx", template, scope)
+Install the POC extras and provide the external E5 ONNX model directory:
+
+```bash
+pip install "semantic-prompt-transfer[poc]"
+export SPT_MODEL_DIR=/content/models/multilingual-e5-small-onnx-int8
+export SPT_ALLOWED_ORIGINS=https://your-html-poc.example
+uvicorn semantic_prompt_transfer.poc_server:app --host 0.0.0.0 --port 8000
 ```
 
-Every fact retains workbook, sheet, cell, formula, unit, period, template, and source-hash provenance.
+The runtime root defaults to `/content/spt_poc_runtime`. A Google Drive path is
+rejected. Expose port 8000 through the chosen temporary HTTPS tunnel and open
+the bundled HTML with `?mode=api&api_base=https://your-colab-api.example`.
 
-## Loan-type and industry few-shot selection
+Optional remote LLM Colab settings:
 
-```python
-from semantic_prompt_transfer import FewShotRegistry, FewShotSelector, ReviewItem
-
-selector = FewShotSelector(FewShotRegistry.from_json("few_shots.json"), max_examples=3)
-examples = selector.select(
-    ReviewItem.PROFITABILITY,
-    loan_type="운전자금",
-    industry_code="C29",
-    situation_tags=("매출성장",),
-)
+```bash
+export SPT_LLM_BASE_URL=https://your-llm-endpoint.example/v1
+export SPT_LLM_MODEL=your-model-name
+export SPT_LLM_API_KEY=optional-secret
 ```
 
-Selection requires the same review item, then ranks exact loan type, industry code or prefix, and situation tags. Only `APPROVED` examples are eligible.
+The remote adapter follows an OpenAI-compatible `chat/completions` contract. If
+it is absent or fails grounding checks, the CPU-fast evidence template generator
+creates a conservative draft. Replacing the LLM does not change retrieval,
+validation, progress, or DOCX rendering.
 
-## Multi-document indexing and deletion
+## Downloadable Excel form
 
-```python
-from semantic_prompt_transfer import DocumentScope, OfflineIndexBuilder, PipelineConfig
+The package includes `credit_report_sample_template.xlsx` and its versioned
+`credit_report_template.json` mapping. The workbook is a blank POC placeholder.
+When the real form is supplied, replace both the workbook and mapping together;
+the HTML button and `/api/v1/templates/credit-report.xlsx` route remain stable.
 
-builder = OfflineIndexBuilder(
-    PipelineConfig.for_index_build(
-        model_dir="models/multilingual-e5-small-onnx-int8",
-        index_path="indexes/operational.npz",
-        representation_level=0,
-        index_write_strategy="UPSERT",
-    )
-)
-
-builder.build("attachment_a_MASTER.json", DocumentScope("bank-a", "review-001", "attachment-a"))
-builder.build("attachment_b_MASTER.json", DocumentScope("bank-a", "review-001", "attachment-b"))
-builder.delete(DocumentScope("bank-a", "review-001", "attachment-a"))
-```
-
-`global_chunk_id` is derived from tenant, case, document, local chunk, and representation level. Deletion is document-scoped. `DocumentLifecycleService` first blocks the document with `DELETING`, deletes its scoped vectors, verifies that no vector remains, deletes the original and derived artifacts through `DocumentArtifactStore`, and only then records `DELETED`.
-
-## Approved HTML interface contract
-
-The bundled `examples/operational/credit_review_upload_demo.html` is the minimal interface reference. `OperationalApplicationService` returns the exact file-list fields needed by the popup:
-
-- filename and file type
-- size in bytes
-- progress percentage
-- progress stage (`파일적재`, `파일검증`, `파일해석`, `벡터임베딩`, `완료`)
-- document-scoped delete availability
-
-The optional FastAPI adapter exposes:
+## HTTP surface
 
 ```text
+GET    /api/v1/runtime/health
+POST   /api/v1/poc/users
+POST   /api/v1/poc/login
+GET    /api/v1/poc/me
+DELETE /api/v1/poc/sessions/current
+GET    /api/v1/templates/credit-report.xlsx
 POST   /api/v1/cases/{case_id}/credit-report
 POST   /api/v1/cases/{case_id}/attachments
 GET    /api/v1/cases/{case_id}/documents
@@ -101,76 +95,15 @@ GET    /api/v1/review-jobs/{job_id}
 GET    /api/v1/review-jobs/{job_id}/opinion.docx
 ```
 
-Install the HTTP adapter only when needed:
-
-```bash
-pip install "semantic-prompt-transfer[web]"
-```
-
-## Five-item generation
-
-`ReviewGenerationOrchestrator` performs:
-
-```text
-PRECHECK -> CREDIT_REPORT_LOAD -> ATTACHMENT_RETRIEVAL
--> ITEM A-E GENERATION -> VALIDATION -> DOCX_RENDER -> COMPLETE
-```
-
-It accepts the provider-neutral `TextGenerator`, emits progress events, validates every item, and creates a Word document with evidence trace information.
-
-## Replaceable CPU text generation
-
-The initial CPU implementation uses `Qwen/Qwen2.5-0.5B-Instruct` through a lazy Transformers adapter. The model is not bundled in the wheel. It is loaded once, kept on CPU, and constrained to short deterministic generation. If the model is unavailable or its draft fails the citation/numeric grounding precheck, `EvidenceTemplateGenerator` immediately produces a conservative evidence-only draft.
-
-```bash
-pip install "semantic-prompt-transfer[llm-cpu]"
-```
-
-```python
-from semantic_prompt_transfer import CpuGenerationConfig, default_cpu_generator
-
-generator = default_cpu_generator(
-    CpuGenerationConfig(
-        model_id="Qwen/Qwen2.5-0.5B-Instruct",
-        max_new_tokens=256,
-        num_threads=4,
-    )
-)
-```
-
-Later replacement requires only another object implementing `generate(messages) -> str`; retrieval, validation, progress, and DOCX code do not change.
-
-## Storage backends
-
-- NPZ: reproducible exact-search reference backend
-- `InMemoryVectorStore`: adapter conformance and tests
-- `ChromaVectorStore`: optional persistent document-scoped UPSERT/delete adapter
-
-Install Chroma support only when needed:
-
-```bash
-pip install "semantic-prompt-transfer[chroma]"
-```
-
-## CLI
-
-```bash
-spt-rag index --master ATTACHMENT_MASTER.json --index operational.npz --model-dir MODEL \
-  --tenant-id bank-a --case-id review-001 --document-id attachment-a \
-  --source-filename attachment-a.pdf --write-strategy UPSERT
-
-spt-rag delete --index operational.npz --model-dir MODEL \
-  --tenant-id bank-a --case-id review-001 --document-id attachment-a
-
-spt-rag credit-report-parse --workbook credit.xlsx --template mapping.json \
-  --tenant-id bank-a --case-id review-001 --document-id credit-report --output facts.json
-
-spt-rag fewshot-select --registry few_shots.json --review-item B \
-  --loan-type 운전자금 --industry-code C29 --situation-tag 매출성장
-```
+Every route except health, signup, and login requires `X-POC-Token`.
 
 ## Operational boundary
 
-The package now includes the HTML-facing application contract, an optional FastAPI adapter, safe local artifact storage, and replaceable generation adapters. Authentication, enterprise object storage, malware scanning, distributed task queues, production LLM hosting, and bank-specific Excel/Word templates remain deployment integrations.
+v0.22 is suitable for a scheduled single-Colab POC. It is not yet a production
+bank deployment. Production still requires enterprise SSO/RBAC, password policy,
+malware scanning, encrypted persistent object storage, a managed Vector DB,
+distributed jobs, audit retention, runtime recovery, official Excel and Word
+forms, and an approved internal LLM with quality evaluation.
 
-The bundled operational example contains no real customer data.
+The repository and package contain no full STX report, customer upload, model,
+credential, or live vector index.

@@ -7,62 +7,89 @@
   <style>
     :root { --line:#d9dde3; --navy:#244a73; --muted:#68707c; --bg:#f5f6f8; }
     * { box-sizing:border-box; }
+    [hidden] { display:none!important; }
     body { margin:0; padding:56px 20px; background:var(--bg); color:#20242b; font:14px Arial,"Noto Sans KR",sans-serif; }
     button { min-width:104px; height:36px; border:1px solid var(--line); border-radius:5px; background:#fff; cursor:pointer; }
     button.primary { border-color:var(--navy); background:var(--navy); color:#fff; }
     button.danger { min-width:52px; height:29px; border-color:#b42318; background:#b42318; color:#fff; font-size:12px; }
     button:disabled { cursor:not-allowed; opacity:.45; }
     .panel { width:min(900px,100%); margin:auto; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 3px 14px #1d2a3a14; }
+    .auth-panel { width:min(460px,100%); }
+    .auth-body { padding:22px 26px 28px; }
+    .tabs { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:20px; }
+    .tabs button.active { border-color:var(--navy); color:var(--navy); font-weight:bold; }
+    .field { display:grid; gap:6px; margin:13px 0; }
+    .field label { font-weight:bold; font-size:13px; }
+    .field input { width:100%; height:38px; padding:0 11px; border:1px solid var(--line); border-radius:5px; }
+    .form-help { margin:10px 0 18px; color:var(--muted); font-size:12px; line-height:1.55; }
+    .form-error { min-height:18px; margin:8px 0; color:#b42318; font-size:12px; }
+    .wide { width:100%; }
+    .header-line { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+    .header-line button { min-width:74px; height:30px; font-size:12px; }
     header { padding:22px 26px; border-bottom:1px solid var(--line); }
     h1 { margin:0; font-size:21px; }
     header p { margin:6px 0 0; color:var(--muted); font-size:13px; }
+    .runtime { display:inline-flex; align-items:center; gap:7px; margin-top:10px; color:var(--muted); font-size:12px; }
+    .runtime::before { width:8px; height:8px; border-radius:50%; background:#9aa2ad; content:""; }
+    .runtime.ready::before { background:#237249; }
+    .runtime.failed::before { background:#b42318; }
     .rows { padding:10px 26px 26px; }
-    .row { display:grid; grid-template-columns:minmax(190px,1fr) 104px minmax(230px,1.3fr); align-items:center; gap:18px; min-height:84px; border-bottom:1px solid #e8eaed; }
+    .row { display:grid; grid-template-columns:minmax(180px,1fr) minmax(224px,auto) minmax(230px,1.3fr); align-items:center; gap:18px; min-height:84px; border-bottom:1px solid #e8eaed; }
     .row:last-child { border:0; }
     .label { display:flex; flex-direction:column; gap:5px; }
     .label strong { font-size:15px; }
     .label small { color:var(--muted); }
+    .row-actions { display:flex; gap:8px; }
     .status { display:grid; grid-template-columns:1fr 44px; align-items:center; gap:12px; }
     .track { height:8px; overflow:hidden; border-radius:10px; background:#d9e2eb; }
     .bar { width:0; height:100%; background:var(--navy); transition:width .15s linear; }
     .status span { color:#4f5965; font-size:13px; text-align:right; }
+    .inline-files { display:flex; flex-wrap:wrap; align-items:center; gap:7px; min-height:38px; }
+    .inline-empty { color:var(--muted); font-size:12px; }
+    .file-chip { display:inline-flex; max-width:100%; align-items:center; gap:7px; padding:7px 8px 7px 10px; border:1px solid var(--line); border-radius:5px; background:#f8f9fb; }
+    .file-chip-name { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .file-chip-stage { color:var(--muted); font-size:11px; white-space:nowrap; }
+    .file-x { min-width:22px; width:22px; height:22px; padding:0; border:0; border-radius:50%; background:#e6e9ed; color:#46505c; font-size:15px; line-height:20px; }
+    .file-x:hover { background:#b42318; color:#fff; }
     input[type=file] { display:none; }
-    dialog { width:min(850px,calc(100% - 32px)); max-height:85vh; padding:0; overflow:auto; border:1px solid var(--line); border-radius:8px; box-shadow:0 18px 50px #0003; }
-    dialog::backdrop { background:#0008; }
-    .modal-head { padding:20px 22px 12px; }
-    .modal-head h2 { margin:0; font-size:18px; }
-    .modal-head p { margin:7px 0 0; color:var(--muted); }
-    .file-section { margin:12px 22px; overflow:hidden; border:1px solid var(--line); border-radius:6px; }
-    .file-section h3 { margin:0; padding:12px 14px; border-bottom:1px solid var(--line); background:#f4f6f8; font-size:14px; }
-    table { width:100%; border-collapse:collapse; }
-    th,td { padding:11px 12px; border-bottom:1px solid #e8eaed; text-align:left; white-space:nowrap; }
-    tbody tr:last-child td { border-bottom:0; }
-    .empty { padding:22px 14px; color:var(--muted); text-align:center; }
-    .badge { display:inline-block; padding:3px 7px; border-radius:4px; background:#eef1f4; color:#4f5965; font-size:12px; }
-    .badge.done { background:#e9f5ee; color:#237249; }
-    .modal-foot { display:flex; justify-content:flex-end; padding:12px 22px 20px; }
-    @media(max-width:700px){ body{padding:20px 12px}.row{grid-template-columns:1fr 104px;gap:12px;padding:18px 0}.status{grid-column:1/-1}.rows{padding:10px 18px 20px}header{padding:20px 18px} }
+    @media(max-width:700px){ body{padding:20px 12px}.row{grid-template-columns:1fr;gap:10px;padding:18px 0}.row-actions{flex-wrap:wrap}.inline-files,.status{grid-column:1}.rows{padding:10px 18px 20px}header{padding:20px 18px}.file-chip-name{max-width:180px} }
   </style>
 </head>
 <body>
-  <main class="panel">
-    <header><h1>신용심사 자료 업로드</h1><p>초기 기능 테스트 화면</p></header>
+  <main class="panel auth-panel" id="authScreen">
+    <header><h1>신용심사 POC</h1><p>회원가입 또는 로그인 후 이용합니다.</p><div class="runtime" id="authRuntimeStatus">서버 확인 전</div></header>
+    <section class="auth-body">
+      <div class="tabs"><button id="loginTab" class="active" type="button">로그인</button><button id="signupTab" type="button">회원가입</button></div>
+      <form id="loginForm">
+        <div class="field"><label for="loginId">아이디</label><input id="loginId" autocomplete="username" required placeholder="사번"></div>
+        <div class="field"><label for="loginPassword">비밀번호</label><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="사번"></div>
+        <p class="form-help">POC에서는 아이디와 비밀번호 모두 회원가입 시 입력한 사번입니다.</p>
+        <div class="form-error" id="loginError"></div><button class="primary wide" type="submit">로그인</button>
+      </form>
+      <form id="signupForm" hidden>
+        <div class="field"><label for="signupDepartment">부서명</label><input id="signupDepartment" required maxlength="80"></div>
+        <div class="field"><label for="signupName">이름</label><input id="signupName" required maxlength="80"></div>
+        <div class="field"><label for="signupEmployee">사번</label><input id="signupEmployee" required maxlength="32"></div>
+        <p class="form-help">회원가입이 완료되면 아이디와 초기 비밀번호가 사번으로 설정됩니다. 이 방식은 제한된 시간의 POC에만 사용합니다.</p>
+        <div class="form-error" id="signupError"></div><button class="primary wide" type="submit">회원가입</button>
+      </form>
+    </section>
+  </main>
+
+  <main class="panel" id="appPanel" hidden>
+    <header><div class="header-line"><div><h1>신용심사 자료 업로드</h1><p id="userSummary">시간 제한형 Colab POC 화면</p></div><button id="logoutButton" type="button">로그아웃</button></div><div class="runtime" id="runtimeStatus">서버 확인 전</div></header>
     <section class="rows">
       <div class="row">
         <div class="label"><strong>신용조사서</strong><small>엑셀 파일 1개</small></div>
-        <button type="button" onclick="creditInput.click()">업로드</button>
-        <div class="status"><div class="track"><div class="bar" id="creditBar"></div></div><span id="creditText">0%</span></div>
-        <input id="creditInput" type="file" accept=".xlsx,.xls">
+        <div class="row-actions"><button class="api-action" type="button" onclick="creditInput.click()">업로드</button><button class="api-action" id="templateButton" type="button">양식 다운로드</button></div>
+        <div class="inline-files" id="creditFiles"><span class="inline-empty">업로드된 파일 없음</span></div>
+        <input id="creditInput" type="file" accept=".xlsx">
       </div>
       <div class="row">
         <div class="label"><strong>기타 첨부자료</strong><small>복수 파일 선택 가능</small></div>
-        <button type="button" onclick="attachmentInput.click()">업로드</button>
-        <div class="status"><div class="track"><div class="bar" id="attachmentBar"></div></div><span id="attachmentText">0%</span></div>
-        <input id="attachmentInput" type="file" multiple accept=".pdf,.doc,.docx,.xlsx,.xls,.txt">
-      </div>
-      <div class="row">
-        <div class="label"><strong>업로드 자료현황</strong></div>
-        <button type="button" onclick="openFiles()">조회</button><div></div>
+        <button class="api-action" type="button" onclick="attachmentInput.click()">업로드</button>
+        <div class="inline-files" id="attachmentFiles"><span class="inline-empty">업로드된 파일 없음</span></div>
+        <input id="attachmentInput" type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.md">
       </div>
       <div class="row">
         <div class="label"><strong>심사의견 다운로드</strong><small id="reportHelp">자료 업로드 후 실행</small></div>
@@ -72,24 +99,61 @@
     </section>
   </main>
 
-  <dialog id="filesDialog">
-    <div class="modal-head"><h2>업로드 자료현황</h2><p>현재 선택한 파일과 처리 단계를 확인합니다.</p></div>
-    <section class="file-section"><h3>1) 신용조사서</h3><div id="creditTable" class="empty">업로드된 파일이 없습니다.</div></section>
-    <section class="file-section"><h3>2) 기타 첨부자료</h3><div id="attachmentTable" class="empty">업로드된 파일이 없습니다.</div></section>
-    <div class="modal-foot"><button class="primary" type="button" onclick="filesDialog.close()">확인</button></div>
-  </dialog>
-
   <script>
     const params = new URLSearchParams(location.search);
-    const apiMode = params.get('mode') === 'api';
-    const apiBase = (params.get('api_base') || '').replace(/\/$/, '');
-    const tenantId = params.get('tenant_id') || 'example';
-    const caseId = params.get('case_id') || 'case-001';
-    const state = { credit: [], attachments: [], report: 0, jobId: null, downloadUrl: null };
+    const configured = window.SPT_CONFIG || {};
+    const apiBase = (params.get('api_base') || configured.apiBase || '').replace(/\/$/, '');
+    const apiMode = params.get('mode') === 'api' || Boolean(apiBase);
+    let tenantId = 'example';
+    let caseId = 'case-001';
+    let accessToken = sessionStorage.getItem('sptPocToken') || '';
+    const state = { credit: [], attachments: [], report: 0, jobId: null };
     const creditInput = document.getElementById('creditInput');
     const attachmentInput = document.getElementById('attachmentInput');
-    const filesDialog = document.getElementById('filesDialog');
     const downloadButton = document.getElementById('downloadButton');
+    const runtimeStatus = document.getElementById('runtimeStatus');
+    const authRuntimeStatus = document.getElementById('authRuntimeStatus');
+    const authScreen = document.getElementById('authScreen');
+    const appPanel = document.getElementById('appPanel');
+    const loginForm = document.getElementById('loginForm');
+    const signupForm = document.getElementById('signupForm');
+    let runtimeMinutes = 0;
+
+    const setRuntime = (text, kind='') => {
+      runtimeStatus.textContent=text;
+      runtimeStatus.className=`runtime ${kind}`;
+      document.querySelectorAll('.api-action').forEach(button=>button.disabled=apiMode&&kind!=='ready');
+    };
+    const setAuthRuntime = (text,kind='')=>{authRuntimeStatus.textContent=text;authRuntimeStatus.className=`runtime ${kind}`;};
+    const switchAuth = mode=>{
+      const login=mode==='login'; loginForm.hidden=!login; signupForm.hidden=login;
+      document.getElementById('loginTab').classList.toggle('active',login);
+      document.getElementById('signupTab').classList.toggle('active',!login);
+      document.getElementById('loginError').textContent=''; document.getElementById('signupError').textContent='';
+    };
+    const rememberGrant = grant=>{
+      accessToken=grant.access_token||'mock'; tenantId=grant.tenant_id||'example'; caseId=grant.case_id||`poc-${grant.user_id}`;
+      sessionStorage.setItem('sptPocToken',accessToken); sessionStorage.setItem('sptPocTenant',tenantId); sessionStorage.setItem('sptPocCase',caseId);
+    };
+    const enterApp = async identity=>{
+      authScreen.hidden=true; appPanel.hidden=false;
+      document.getElementById('userSummary').textContent=`${identity.department||''} · ${identity.name||''} · ${identity.user_id||identity.employee_number||''}`;
+      setRuntime(apiMode?`Colab 연결됨 · 약 ${runtimeMinutes}분 남음`:'화면 예시 모드','ready');
+      if(apiMode) await loadUploads(); else syncMainProgress();
+    };
+    const showLogin = message=>{
+      appPanel.hidden=true; authScreen.hidden=false; switchAuth('login');
+      setAuthRuntime(message||'로그인이 필요합니다.',message?'failed':'ready');
+    };
+    const apiFetch = async (path, options={}) => {
+      const headers=new Headers(options.headers||{});
+      if(accessToken) headers.set('X-POC-Token',accessToken);
+      const response=await fetch(`${apiBase}${path}`,{...options,headers});
+      if(response.status===401){
+        sessionStorage.removeItem('sptPocToken'); accessToken=''; showLogin('세션이 만료되었습니다. 다시 로그인하세요.');
+      }
+      return response;
+    };
 
     const typeOf = name => (name.split('.').pop() || '파일').toUpperCase();
     const sizeOf = bytes => bytes < 1048576 ? `${Math.max(1,Math.round(bytes/1024))} KB` : `${(bytes/1048576).toFixed(1)} MB`;
@@ -98,23 +162,21 @@
       document.getElementById(`${kind}Bar`).style.width = `${value}%`;
       document.getElementById(`${kind}Text`).textContent = value === 100 ? '완료' : `${value}%`;
     };
-    const table = (files, key) => {
-      if (!files.length) return '<div class="empty">업로드된 파일이 없습니다.</div>';
-      return `<table><thead><tr><th>파일명</th><th>자료유형</th><th>파일크기</th><th>진행단계</th><th>삭제</th></tr></thead><tbody>${files.map(file => `<tr><td>${file.name.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</td><td>${file.type}</td><td>${sizeOf(file.size)}</td><td><span class="badge ${file.progress===100?'done':''}">${file.stage||stageOf(file.progress)}</span></td><td><button class="danger" type="button" onclick="deleteItem('${key}','${file.id}')">삭제</button></td></tr>`).join('')}</tbody></table>`;
+    const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const inlineFiles = (files,key) => {
+      if(!files.length) return '<span class="inline-empty">업로드된 파일 없음</span>';
+      return files.map(file=>`<span class="file-chip" title="${escapeHtml(file.name)} · ${sizeOf(file.size)}"><span class="file-chip-name">${escapeHtml(file.name)}</span><span class="file-chip-stage">${escapeHtml(file.stage||stageOf(file.progress))}</span><button class="file-x" type="button" aria-label="${escapeHtml(file.name)} 삭제" onclick="deleteItem('${key}','${file.id}')">×</button></span>`).join('');
     };
-    const renderTables = () => {
-      document.getElementById('creditTable').outerHTML = `<div id="creditTable">${table(state.credit,'credit')}</div>`;
-      document.getElementById('attachmentTable').outerHTML = `<div id="attachmentTable">${table(state.attachments,'attachments')}</div>`;
+    const renderFileLists = () => {
+      document.getElementById('creditFiles').innerHTML=inlineFiles(state.credit,'credit');
+      document.getElementById('attachmentFiles').innerHTML=inlineFiles(state.attachments,'attachments');
     };
     const syncMainProgress = () => {
-      status('credit', state.credit[0]?.progress || 0);
-      const attachmentValue=state.attachments.length?Math.round(state.attachments.reduce((sum,file)=>sum+file.progress,0)/state.attachments.length):0;
-      status('attachment',attachmentValue);
       downloadButton.disabled=state.credit[0]?.progress!==100;
-      renderTables();
+      renderFileLists();
     };
     const loadUploads = async () => {
-      const response=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(tenantId)}`);
+      const response=await apiFetch(`/api/v1/cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(tenantId)}`);
       if(!response.ok) throw new Error(`자료현황 조회 실패 (${response.status})`);
       const payload=await response.json();
       const convert=row=>({id:row.document_id,name:row.filename,type:row.file_type,size:row.size_bytes||0,progress:row.progress_percent||0,stage:row.progress_stage});
@@ -122,23 +184,17 @@
       state.attachments=(payload.attachments||[]).map(convert);
       syncMainProgress();
     };
-    const openFiles = async () => {
-      if(apiMode){ try{ await loadUploads(); }catch(error){ alert(error.message); return; } }
-      filesDialog.showModal();
-    };
     const deleteItem = async (key,id) => {
       if(!confirm('서버에 적재된 파일과 해당 파일의 임베딩 벡터를 모두 삭제합니다.')) return;
       if(apiMode){
-        const response=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(id)}?tenant_id=${encodeURIComponent(tenantId)}`,{method:'DELETE'});
+        const response=await apiFetch(`/api/v1/cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(id)}?tenant_id=${encodeURIComponent(tenantId)}`,{method:'DELETE'});
         if(!response.ok){ const detail=await response.text(); alert(`삭제 실패: ${detail}`); return; }
         await loadUploads();
       } else {
       state[key]=state[key].filter(file=>file.id!==id);
-      const kind=key==='credit'?'credit':'attachment';
-      const value=state[key].length?Math.round(state[key].reduce((sum,file)=>sum+file.progress,0)/state[key].length):0;
-      status(kind,value); state.report=0; status('report',0); downloadButton.disabled=state.credit[0]?.progress!==100;
+      state.report=0; status('report',0); downloadButton.disabled=state.credit[0]?.progress!==100;
       document.getElementById('reportHelp').textContent='자료 업로드 후 실행';
-      renderTables();
+      renderFileLists();
       }
     };
     const run = (files, key, replace) => {
@@ -148,15 +204,14 @@
       let value=1;
       const timer=setInterval(()=>{
         value=Math.min(100,value+7); incoming.forEach(item=>item.progress=value);
-        const average=Math.round(state[key].reduce((sum,file)=>sum+file.progress,0)/state[key].length);
-        status(key==='credit'?'credit':'attachment',average); renderTables();
+        renderFileLists();
         if(value===100){ clearInterval(timer); if(state.credit[0]?.progress===100) downloadButton.disabled=false; }
       },140);
     };
     const apiUpload = async (endpoint, files) => {
       for(const file of files){
         const form=new FormData(); form.append('file',file);
-        const response=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/${endpoint}?tenant_id=${encodeURIComponent(tenantId)}`,{method:'POST',body:form});
+        const response=await apiFetch(`/api/v1/cases/${encodeURIComponent(caseId)}/${endpoint}?tenant_id=${encodeURIComponent(tenantId)}`,{method:'POST',body:form});
         if(!response.ok) throw new Error(`업로드 실패 (${response.status})`);
       }
       await loadUploads();
@@ -164,13 +219,26 @@
     };
     creditInput.addEventListener('change',async()=>{ if(creditInput.files.length){ if(apiMode){try{await apiUpload('credit-report',[creditInput.files[0]]);}catch(error){alert(error.message);}}else run([creditInput.files[0]],'credit',true); } creditInput.value=''; });
     attachmentInput.addEventListener('change',async()=>{ if(attachmentInput.files.length){ if(apiMode){try{await apiUpload('attachments',[...attachmentInput.files]);}catch(error){alert(error.message);}}else run([...attachmentInput.files],'attachments',false); } attachmentInput.value=''; });
+    document.getElementById('templateButton').addEventListener('click',async()=>{
+      try{
+        const response=apiMode?await apiFetch('/api/v1/templates/credit-report.xlsx'):await fetch('credit_report_sample_template.xlsx');
+        if(!response.ok) throw new Error(`양식 다운로드 실패 (${response.status})`);
+        const blob=await response.blob(); const url=URL.createObjectURL(blob); const link=document.createElement('a');
+        link.href=url; link.download='신용조사서_POC_예시양식.xlsx'; link.click(); URL.revokeObjectURL(url);
+      }catch(error){alert(`${error.message}\n실제 신용조사서 양식 파일을 제공받으면 같은 버튼에 연결됩니다.`);}
+    });
     downloadButton.addEventListener('click',async()=>{
       if(apiMode){
-        if(state.downloadUrl){ location.href=state.downloadUrl; return; }
-        const started=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/review-jobs?tenant_id=${encodeURIComponent(tenantId)}`,{method:'POST'});
+        if(state.jobId&&state.report===100){
+          const response=await apiFetch(`/api/v1/review-jobs/${encodeURIComponent(state.jobId)}/opinion.docx`);
+          if(!response.ok){alert(`다운로드 실패 (${response.status})`);return;}
+          const blob=await response.blob(); const url=URL.createObjectURL(blob);
+          const link=document.createElement('a'); link.href=url; link.download='심사의견.docx'; link.click(); URL.revokeObjectURL(url); return;
+        }
+        const started=await apiFetch(`/api/v1/cases/${encodeURIComponent(caseId)}/review-jobs?tenant_id=${encodeURIComponent(tenantId)}`,{method:'POST'});
         if(!started.ok){alert(`심사의견 생성 시작 실패 (${started.status})`);return;}
         const job=await started.json(); state.jobId=job.job_id; downloadButton.disabled=true;
-        const poll=setInterval(async()=>{ const response=await fetch(`${apiBase}/api/v1/review-jobs/${encodeURIComponent(state.jobId)}`); if(!response.ok){clearInterval(poll);alert('심사의견 진행상태 조회 실패');return;} const current=await response.json(); state.report=current.progress; status('report',state.report); if(current.progress===100){clearInterval(poll);state.downloadUrl=`${apiBase}/api/v1/review-jobs/${encodeURIComponent(state.jobId)}/opinion.docx`;downloadButton.disabled=false;document.getElementById('reportHelp').textContent='버튼을 다시 누르면 파일이 내려받아집니다.';} },800);
+        const poll=setInterval(async()=>{ const response=await apiFetch(`/api/v1/review-jobs/${encodeURIComponent(state.jobId)}`); if(!response.ok){clearInterval(poll);alert('심사의견 진행상태 조회 실패');return;} const current=await response.json(); state.report=current.progress; status('report',state.report); if(current.progress===100){clearInterval(poll);downloadButton.disabled=false;document.getElementById('reportHelp').textContent='버튼을 다시 누르면 파일이 내려받아집니다.';} if(current.stage==='FAILED'){clearInterval(poll);downloadButton.disabled=false;alert(`심사의견 생성 실패: ${current.message}`);} },800);
         return;
       }
       if(state.report===100){
@@ -181,7 +249,57 @@
       downloadButton.disabled=true; let value=1; state.report=value; status('report',value);
       const timer=setInterval(()=>{ value=Math.min(100,value+5); state.report=value; status('report',value); if(value===100){clearInterval(timer); downloadButton.disabled=false; document.getElementById('reportHelp').textContent='버튼을 다시 누르면 파일이 내려받아집니다.';} },130);
     });
-    if(apiMode) loadUploads().catch(error=>console.error(error));
+    document.getElementById('loginTab').addEventListener('click',()=>switchAuth('login'));
+    document.getElementById('signupTab').addEventListener('click',()=>switchAuth('signup'));
+    signupForm.addEventListener('submit',async event=>{
+      event.preventDefault(); const error=document.getElementById('signupError'); error.textContent='';
+      const payload={department:document.getElementById('signupDepartment').value.trim(),name:document.getElementById('signupName').value.trim(),employee_number:document.getElementById('signupEmployee').value.trim()};
+      try{
+        if(apiMode){
+          const response=await fetch(`${apiBase}/api/v1/poc/users`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+          if(!response.ok){const value=await response.json().catch(()=>({}));throw new Error(value.detail||`회원가입 실패 (${response.status})`);}
+        }else{
+          const users=JSON.parse(localStorage.getItem('sptMockUsers')||'{}'); if(users[payload.employee_number]) throw new Error('이미 가입된 사번입니다.'); users[payload.employee_number]=payload; localStorage.setItem('sptMockUsers',JSON.stringify(users));
+        }
+        document.getElementById('loginId').value=payload.employee_number; document.getElementById('loginPassword').value=payload.employee_number;
+        switchAuth('login'); document.getElementById('loginError').textContent='회원가입 완료 · 사번으로 로그인하세요.';
+      }catch(exc){error.textContent=exc.message;}
+    });
+    loginForm.addEventListener('submit',async event=>{
+      event.preventDefault(); const error=document.getElementById('loginError'); error.textContent='';
+      const userId=document.getElementById('loginId').value.trim(); const password=document.getElementById('loginPassword').value;
+      try{
+        let grant;
+        if(apiMode){
+          const response=await fetch(`${apiBase}/api/v1/poc/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,password})});
+          if(!response.ok){const value=await response.json().catch(()=>({}));throw new Error(value.detail||`로그인 실패 (${response.status})`);} grant=await response.json();
+        }else{
+          const users=JSON.parse(localStorage.getItem('sptMockUsers')||'{}'); const user=users[userId]; if(!user||password!==userId) throw new Error('아이디 또는 비밀번호가 올바르지 않습니다.'); grant={...user,user_id:userId,tenant_id:'example',case_id:`poc-${userId}`,access_token:'mock'};
+        }
+        rememberGrant(grant); await enterApp(grant);
+      }catch(exc){error.textContent=exc.message;}
+    });
+    document.getElementById('logoutButton').addEventListener('click',async()=>{
+      if(apiMode&&accessToken) await apiFetch('/api/v1/poc/sessions/current',{method:'DELETE'}).catch(()=>{});
+      for(const key of ('sptPocToken','sptPocTenant','sptPocCase')) sessionStorage.removeItem(key);
+      accessToken=''; state.credit=[]; state.attachments=[]; state.report=0; state.jobId=null; showLogin();
+    });
+    const connect = async()=>{
+      if(!apiMode){setAuthRuntime('화면 예시 모드','ready');showLogin();return;}
+      setAuthRuntime('Colab 서버 연결 중');
+      try{
+        const health=await fetch(`${apiBase}/api/v1/runtime/health`);
+        if(!health.ok) throw new Error(`서버 상태 ${health.status}`);
+        const healthData=await health.json();
+        runtimeMinutes=Math.max(0,Math.floor((healthData.remaining_seconds||0)/60)); setAuthRuntime(`Colab 연결됨 · 약 ${runtimeMinutes}분 남음`,'ready');
+        if(accessToken){
+          tenantId=sessionStorage.getItem('sptPocTenant')||tenantId; caseId=sessionStorage.getItem('sptPocCase')||caseId;
+          const me=await apiFetch('/api/v1/poc/me'); if(me.ok){await enterApp(await me.json());return;}
+        }
+        showLogin();
+      }catch(error){setAuthRuntime(error.message,'failed');}
+    };
+    connect();
   </script>
 </body>
 </html>

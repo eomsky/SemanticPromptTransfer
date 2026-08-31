@@ -84,12 +84,18 @@ class ReviewGenerationOrchestrator:
         llm: LLMClient | None,
         output_path: str | Path,
         progress_callback: Callable[[ProgressEvent], None] | None = None,
+        job_id: str | None = None,
     ) -> ReviewGenerationResult:
         generator = llm or self.llm
         if generator is None:
             raise ValueError("a text generator must be provided to the orchestrator or generate()")
-        job = self.registry.create_job(case.tenant_id, case.case_id) if self.registry else None
-        job_id = job.job_id if job else uuid.uuid4().hex
+        if self.registry and job_id is not None:
+            job = self.registry.get_job(job_id)
+            if (job.tenant_id, job.case_id) != (case.tenant_id, case.case_id):
+                raise ValueError("review job scope does not match the case")
+        else:
+            job = self.registry.create_job(case.tenant_id, case.case_id) if self.registry else None
+        job_id = job_id or (job.job_id if job else uuid.uuid4().hex)
         events: list[ProgressEvent] = []
 
         def emit(stage: JobStage, progress: int, message: str, item: ReviewItem | None = None) -> None:

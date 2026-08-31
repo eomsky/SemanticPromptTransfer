@@ -19,7 +19,10 @@
 4. FEW SHOT의 사실 근거 사용 금지
 5. 삭제 성공 조건: 문서 벡터 0건 및 서버 원본 부재
 6. 생성기 계약: `TextGenerator.generate(messages) -> str`
-7. 외부 어댑터 경계: PDF/Excel 파서, Vector DB, 객체 저장소, 작업 큐, 운영 LLM
+7. 다운로드 양식 계약: XLSX와 셀 매핑 JSON의 동시 버전 관리
+8. POC 저장 계약: `/content` 임시 루트, Google Drive runtime 사용 금지, 종료 시 purge
+9. 사용자 계약: 부서명·이름·사번, POC ID/초기 비밀번호=사번, 사용자별 case 격리
+10. 외부 어댑터 경계: PDF/Excel 파서, Vector DB, 객체 저장소, 작업 큐, 운영 LLM
 
 ## 3. 릴리스 포함 범위
 
@@ -48,6 +51,11 @@
 7. 검증 보고서와 SHA-256 매니페스트를 생성한다.
 8. GitHub `main`에 fast-forward 커밋하고 Google Drive의 신규 버전 폴더에 같은 산출물을 올린다.
 9. GitHub 커밋과 Drive 파일 목록을 다시 읽어 적재 결과를 확인한다.
+
+검증을 마친 뒤 `tools/build_release_bundle.py --output-dir <출력경로>
+--version <패키지버전>`을 실행하면 wheel·sdist·HTML·XLSX·운영 문서·소스 ZIP과
+SHA-256 매니페스트를 같은 버전명으로 모은다. 실제 양식 적용 시에는 XLSX와
+`credit_report_template.json`을 먼저 같은 커밋에서 교체한 뒤 이 도구를 실행한다.
 
 ## 5. 버전 폴더 규칙
 

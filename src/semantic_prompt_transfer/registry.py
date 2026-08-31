@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -21,6 +22,18 @@ ALLOWED_FILE_TRANSITIONS = {
     FileStatus.DELETING: {FileStatus.DELETED, FileStatus.FAILED},
     FileStatus.DELETED: set(),
 }
+
+
+def _locked(method):
+    """Serialize access to one shared SQLite connection across web workers."""
+
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    wrapper.__name__ = method.__name__
+    wrapper.__doc__ = method.__doc__
+    return wrapper
 
 
 @dataclass(frozen=True)
@@ -72,11 +85,14 @@ class OperationalRegistry:
     """SQLite metadata registry for uploaded files and generation jobs."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
-        self.connection = sqlite3.connect(str(path))
+        self._lock = threading.RLock()
+        self.connection = sqlite3.connect(str(path), check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         self._create_schema()
 
+    @_locked
     def _create_schema(self) -> None:
         self.connection.executescript(
             """
@@ -166,6 +182,7 @@ class OperationalRegistry:
             (uuid.uuid4().hex, tenant_id, case_id, entity_id, event_type, json.dumps(payload, ensure_ascii=False), time.time()),
         )
 
+    @_locked
     def register_document(
         self,
         *,
@@ -211,6 +228,7 @@ class OperationalRegistry:
         self.connection.commit()
         return self.get_document(tenant_id, case_id, document_id)
 
+    @_locked
     def get_document(self, tenant_id: str, case_id: str, document_id: str) -> DocumentRecord:
         row = self.connection.execute(
             "SELECT * FROM documents WHERE tenant_id=? AND case_id=? AND document_id=?",
@@ -220,6 +238,7 @@ class OperationalRegistry:
             raise KeyError(document_id)
         return self._document(row)
 
+    @_locked
     def list_documents(self, tenant_id: str, case_id: str, include_deleted: bool = False) -> list[DocumentRecord]:
         query = "SELECT * FROM documents WHERE tenant_id=? AND case_id=?"
         params: list[Any] = [tenant_id, case_id]
@@ -229,6 +248,7 @@ class OperationalRegistry:
         query += " ORDER BY created_at, document_id"
         return [self._document(row) for row in self.connection.execute(query, params)]
 
+    @_locked
     def transition_document(
         self,
         tenant_id: str,
@@ -277,6 +297,7 @@ class OperationalRegistry:
         self.connection.commit()
         return self.get_document(tenant_id, case_id, document_id)
 
+    @_locked
     def create_job(self, tenant_id: str, case_id: str) -> JobRecord:
         now = time.time()
         job_id = uuid.uuid4().hex
@@ -288,6 +309,7 @@ class OperationalRegistry:
         self.connection.commit()
         return self.get_job(job_id)
 
+    @_locked
     def update_job(
         self,
         job_id: str,
@@ -309,6 +331,7 @@ class OperationalRegistry:
         self.connection.commit()
         return self.get_job(job_id)
 
+    @_locked
     def get_job(self, job_id: str) -> JobRecord:
         row = self.connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         if row is None:
@@ -318,6 +341,52 @@ class OperationalRegistry:
             stage=JobStage(row["stage"]), progress=int(row["progress"]), message=row["message"],
             output_path=row["output_path"], created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
         )
+
+    @_locked
+    def delete_case_records(self, tenant_id: str, case_id: str) -> dict[str, int]:
+        """Remove one expired POC case after its files and vectors are absent."""
+        counts = {
+            "documents": int(
+                self.connection.execute(
+                    "SELECT COUNT(*) FROM documents WHERE tenant_id=? AND case_id=?",
+                    (tenant_id, case_id),
+                ).fetchone()[0]
+            ),
+            "jobs": int(
+                self.connection.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE tenant_id=? AND case_id=?",
+                    (tenant_id, case_id),
+                ).fetchone()[0]
+            ),
+            "audit_events": int(
+                self.connection.execute(
+                    "SELECT COUNT(*) FROM audit_events WHERE tenant_id=? AND case_id=?",
+                    (tenant_id, case_id),
+                ).fetchone()[0]
+            ),
+        }
+        self.connection.execute(
+            "DELETE FROM documents WHERE tenant_id=? AND case_id=?", (tenant_id, case_id)
+        )
+        self.connection.execute(
+            "DELETE FROM jobs WHERE tenant_id=? AND case_id=?", (tenant_id, case_id)
+        )
+        self.connection.execute(
+            "DELETE FROM audit_events WHERE tenant_id=? AND case_id=?", (tenant_id, case_id)
+        )
+        self.connection.commit()
+        return counts
+
+    @_locked
+    def stats(self) -> dict[str, int]:
+        return {
+            table: int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in ("documents", "jobs", "audit_events")
+        }
+
+    @_locked
+    def close(self) -> None:
+        self.connection.close()
 
     @staticmethod
     def _document(row: sqlite3.Row) -> DocumentRecord:

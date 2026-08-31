@@ -18,10 +18,13 @@ from .encoding import E5OnnxEncoder, EncoderBackend, EncoderRegistry
 from .fewshot import FewShotRegistry, FewShotSelector
 from .indexing import RAGIndex
 from .application import OperationalApplicationService
+from .colab_runtime import EphemeralColabConfig, EphemeralColabRuntime
 from .llm import (
     CpuGenerationConfig,
     EvidenceTemplateGenerator,
     FallbackGenerator,
+    OpenAICompatibleHttpGenerator,
+    RemoteGenerationConfig,
     TextGenerator,
     TransformersCpuGenerator,
     default_cpu_generator,
@@ -35,9 +38,25 @@ from .registry import DocumentRecord, JobRecord, OperationalRegistry
 from .review import EvidenceAssembler, ReviewPromptBuilder, ReviewPromptPackage
 from .review_docx import OpinionDocumentBuilder
 from .storage import ArtifactDeletionResult, DocumentArtifactStore, LocalDocumentArtifactStore
+from .poc_bootstrap import ColabPocBundle, build_colab_poc, build_colab_poc_from_env
+from .poc_identity import PocIdentityService
+from .poc_processing import (
+    ExtractedBlock,
+    PocDocumentExtractor,
+    PocUploadProcessor,
+    ShardedAttachmentRetriever,
+)
+from .poc_review import EphemeralReviewJobService, PocCreditFactRepository
+from .poc_session import PocSession, PocSessionGrant, PocSessionManager
 from .retrieval import RetrievalEngine
 from .validation import OpinionValidator, ValidationIssue, ValidationReport
-from .vector_store import ChromaVectorStore, InMemoryVectorStore, VectorPoint, VectorStoreBackend
+from .vector_store import (
+    ChromaVectorStore,
+    InMemoryVectorStore,
+    ShardedNpzVectorStore,
+    VectorPoint,
+    VectorStoreBackend,
+)
 from .web import ReviewJobStarter, UploadProcessor, create_fastapi_app
 
 __all__ = [
@@ -50,16 +69,21 @@ __all__ = [
     "CreditReportParseResult",
     "CreditReportParser",
     "CreditReportTemplate",
+    "ColabPocBundle",
     "DocumentKind",
     "DocumentLifecycleService",
     "DocumentArtifactStore",
     "DocumentRecord",
+    "EphemeralColabConfig",
+    "EphemeralColabRuntime",
+    "EphemeralReviewJobService",
     "E5OnnxEncoder",
     "EncoderBackend",
     "EncoderRegistry",
     "EvidenceAssembler",
     "EvidenceRecord",
     "EvidenceTemplateGenerator",
+    "ExtractedBlock",
     "FewShotExample",
     "FewShotRegistry",
     "FewShotSelector",
@@ -74,6 +98,7 @@ __all__ = [
     "PackageChunkBuilder",
     "OfflineIndexBuilder",
     "OnlineRAGService",
+    "OpenAICompatibleHttpGenerator",
     "OperationalRegistry",
     "OperationalApplicationService",
     "OpinionDocumentBuilder",
@@ -83,6 +108,13 @@ __all__ = [
     "PromptPackage",
     "PromptPackageBuilder",
     "ProgressEvent",
+    "PocCreditFactRepository",
+    "PocDocumentExtractor",
+    "PocIdentityService",
+    "PocSession",
+    "PocSessionGrant",
+    "PocSessionManager",
+    "PocUploadProcessor",
     "QueryProfileRegistry",
     "RAGIndex",
     "RAGPipeline",
@@ -95,9 +127,12 @@ __all__ = [
     "ReviewQueryProfile",
     "ReviewSectionDraft",
     "ReviewValidationError",
+    "RemoteGenerationConfig",
     "RepresentationLevel",
     "RetrievalEngine",
     "SourceTier",
+    "ShardedAttachmentRetriever",
+    "ShardedNpzVectorStore",
     "TextGenerator",
     "TransformersCpuGenerator",
     "UploadProcessor",
@@ -107,6 +142,8 @@ __all__ = [
     "VectorPoint",
     "VectorStoreBackend",
     "build_experimental_matrix",
+    "build_colab_poc",
+    "build_colab_poc_from_env",
     "default_query_profiles",
     "default_cpu_generator",
     "create_fastapi_app",

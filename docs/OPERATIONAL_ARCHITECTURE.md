@@ -1,11 +1,58 @@
-# Operational architecture
+# v0.22 POC 운영 구조
 
-The browser and application server manage two upload classes: a standardized credit-report Excel and other attachments. The credit report is parsed deterministically into canonical facts. Attachments are transformed into MASTER records, L0 chunks, embeddings, and vector records.
+## 실행 경계
 
-The generation layer runs the five fixed review items. It injects item-specific credit facts and common credit facts before retrieving attachments. Approved examples are selected by item, loan type, industry, and situation, but remain a separate style-only prompt section.
+브라우저 HTML은 화면과 HTTP 호출만 담당한다. Colab 애플리케이션 런타임은
+회원가입, 세션, 업로드, 파일 해석, E5 임베딩, 벡터 검색, 심사의견 진행률,
+DOCX를 담당한다. 별도 LLM Colab은 선택 사항이며 HTTPS의 OpenAI 호환
+`chat/completions` 계약으로 연결한다.
 
-File deletion is a verified lifecycle operation. The registry first marks the document `DELETING`, the vector backend deletes every point under the tenant/case/document scope, and a count query must return zero. The artifact store then removes the original and derived assets and verifies absence before the registry records `DELETED`. On any failure the document becomes `FAILED`, remains visible to operators, and is not reported as successfully removed. Audit events remain.
+모든 임시 상태는 `/content/spt_poc_runtime` 아래에 둔다. Google Drive 경로는
+설정 단계에서 거부한다. 런타임 종료 시 sentinel을 확인한 뒤 루트 전체를
+제거한다. 브라우저 로그아웃은 데이터 복구를 위해 세션만 종료하며, 실제
+전체 삭제 시점은 Colab 런타임 종료 또는 명시적 심사건 purge이다.
 
-The HTML-facing application service groups one credit report and multiple attachments and exposes file type, size, progress percentage, progress stage, and delete availability. Optional HTTP routes translate the interface actions into application-service calls; the parser/indexer remains a replaceable `UploadProcessor` so the frozen upstream PDF/Excel implementation can be connected without changing the web layer.
+## 사용자와 범위
 
-The initial text-generation adapter runs `Qwen/Qwen2.5-0.5B-Instruct` on CPU when the optional dependencies and model are available. It is isolated behind `TextGenerator`. A grounding precheck and evidence-only fallback prevent missing citations or unsupported numbers from stopping early tests. The final Word document is available only after item-level source and numeric validation, validation-result aggregation, and rendering complete. Bank-specific cross-item consistency rules remain a deployment integration.
+회원가입 입력은 부서명, 이름, 사번이다. 시간 제한형 POC에서는 아이디와
+초기 비밀번호가 사번과 같다. 임시 SQLite에는 PBKDF2-HMAC 비밀번호 해시를
+보관한다. 각 사용자에게 결정적인 해시형 `case_id`를 부여하며 모든 문서와
+검색은 `(tenant_id, case_id)`를 요구한다. 다른 사용자의 case를 토큰으로
+지정하면 401로 차단한다.
+
+## 업로드와 벡터
+
+신용조사서 Excel은 일반 벡터 근거가 아니라 버전 매핑으로 읽는 최우선 정형
+사실이다. 기타 첨부파일은 텍스트 블록을 추출하고 1,800자/180자 중첩 L0
+청크를 생성해 E5로 임베딩한다.
+
+`ShardedNpzVectorStore`는 논리적으로 하나의 DB이지만 물리적으로 문서당 NPZ
+shard 하나를 쓴다. 한 PDF 추가·교체·삭제는 해당 shard에만 영향을 주며,
+검색 시 모든 shard를 같은 case 필터로 조회해 점수순으로 합친다. 이는 소규모
+POC의 정확검색 구현이며 대규모 운영에서는 동일 범위 계약의 관리형 Vector DB로
+교체한다.
+
+## 근거·FEW SHOT·LLM
+
+각 고정 심사항목의 근거는 `TIER_1 항목별 신용조사서 > TIER_2 공통
+신용조사서 > TIER_3 첨부검색` 순서로 조립한다. FEW SHOT은 심사항목,
+여신유형, 산업분류, 상황 태그로 선택하되 스타일 섹션에만 놓는다.
+
+생성기는 `TextGenerator.generate(messages) -> str` 계약 뒤에 있다. 외부 LLM
+Colab을 설정하면 HTTPS OpenAI 호환 어댑터를 우선 호출한다. 설정이 없거나
+호출·근거검증이 실패하면 현재 evidence_id와 수치만 사용하는 즉시 실행형
+CPU 폴백이 동작한다.
+
+## UI와 삭제
+
+업로드 진행률 막대와 자료현황 팝업은 없다. 신용조사서와 기타 첨부자료 행
+오른쪽에 파일명, 처리단계, `×`가 바로 표시된다. 심사의견 생성만 진행률 막대를
+사용한다. `×` 요청은 문서 상태를 `DELETING`으로 잠근 뒤 벡터 삭제와 0건
+검증, 파생파일 삭제, 서버 원본 삭제와 부재 검증을 수행하고 `DELETED`를
+기록한다. 성공 응답을 받은 뒤에만 화면에서 파일명이 사라진다.
+
+## 양식 교체 경계
+
+HTML은 `/api/v1/templates/credit-report.xlsx`만 호출한다. 실제 양식 수령 시
+다운로드 XLSX와 `credit_report_template.json` 매핑을 같은 버전으로 교체한다.
+웹 라우트, 세션, 벡터 검색, 심사의견 생성 코드는 바꾸지 않는다.

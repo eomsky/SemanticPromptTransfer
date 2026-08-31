@@ -133,6 +133,25 @@ class CreditFact:
         value["tier"] = int(self.tier)
         return value
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CreditFact":
+        return cls(
+            fact_id=str(value["fact_id"]),
+            field_id=str(value["field_id"]),
+            field_name=str(value["field_name"]),
+            value=value.get("value"),
+            unit=value.get("unit"),
+            period=value.get("period"),
+            review_items=tuple(ReviewItem(str(item)) for item in value.get("review_items", [])),
+            common=bool(value.get("common", False)),
+            document_id=str(value["document_id"]),
+            source_filename=str(value["source_filename"]),
+            sheet_name=str(value["sheet_name"]),
+            cell_range=str(value["cell_range"]),
+            formula=value.get("formula"),
+            source_hash=value.get("source_hash"),
+        )
+
 
 @dataclass(frozen=True)
 class FewShotExample:

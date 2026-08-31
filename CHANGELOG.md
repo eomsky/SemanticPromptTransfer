@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.0 - 2026-08-31
+
+- Added a disposable Colab runtime that rejects Google Drive paths and purges all POC state on close.
+- Added ephemeral signup/login using department, name, and employee number; POC ID and password equal the employee number.
+- Replaced the upload-status popup and upload progress bars with inline filenames, stages, and verified `×` deletion.
+- Added the credit-report template download route and bundled blank sample XLSX.
+- Added PDF, DOCX, XLSX, TXT, and Markdown extraction for the time-boxed upload path.
+- Added one logical exact-search Vector DB backed by atomic per-document NPZ shards.
+- Added OpenAI-compatible remote LLM support with the existing evidence-grounded CPU fallback.
+- Added a Uvicorn entry point, FastAPI end-to-end smoke, real CPU E5 two-PDF smoke, and user-scope isolation checks.
+- Preserved L0 as the default and the TIER 1 > TIER 2 > TIER 3 evidence contract.
+
 ## 0.21.0 - 2026-08-31
 
 - Aligned the package with the approved minimal HTML upload/status/download interface.

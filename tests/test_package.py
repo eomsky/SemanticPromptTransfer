@@ -560,14 +560,19 @@ class OperationalPackageTests(unittest.TestCase):
         )
         content = path.read_text(encoding="utf-8")
         for label in (
+            "회원가입",
+            "부서명",
+            "사번",
             "신용조사서",
+            "양식 다운로드",
             "기타 첨부자료",
-            "업로드 자료현황",
             "심사의견 다운로드",
-            "임베딩 벡터를 모두 삭제",
+            "file-x",
             "/api/v1/cases/",
+            "/api/v1/templates/credit-report.xlsx",
         ):
             self.assertIn(label, content)
+        self.assertNotIn("업로드 자료현황", content)
 
     def test_five_item_orchestration_generates_docx_and_progress(self):
         class EmptyRetriever:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib import error, parse, request
 
 
 class TextGenerator(Protocol):
@@ -16,6 +19,74 @@ class CpuGenerationConfig:
     context_max_chars: int = 16000
     num_threads: int | None = None
     local_files_only: bool = False
+
+
+@dataclass(frozen=True)
+class RemoteGenerationConfig:
+    """OpenAI-compatible endpoint configuration for a separately started LLM Colab."""
+
+    base_url: str
+    model: str
+    api_key: str | None = None
+    api_key_env: str = "SPT_LLM_API_KEY"
+    timeout_seconds: float = 120.0
+    max_new_tokens: int = 512
+    temperature: float = 0.0
+    allow_insecure_http: bool = False
+
+    def __post_init__(self) -> None:
+        parsed = parse.urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("remote LLM base_url must be an absolute HTTP(S) URL")
+        if parsed.scheme != "https" and not self.allow_insecure_http:
+            raise ValueError("remote LLM requires HTTPS unless allow_insecure_http=True")
+        if not self.model.strip():
+            raise ValueError("remote LLM model is required")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+
+
+class OpenAICompatibleHttpGenerator:
+    """Small dependency-free adapter for a remote Colab LLM endpoint."""
+
+    def __init__(self, config: RemoteGenerationConfig) -> None:
+        self.config = config
+
+    def _url(self) -> str:
+        base = self.config.base_url.rstrip("/")
+        return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        payload = json.dumps(
+            {
+                "model": self.config.model,
+                "messages": messages,
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_new_tokens,
+                "stream": False,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        api_key = self.config.api_key or os.environ.get(self.config.api_key_env)
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        call = request.Request(self._url(), data=payload, headers=headers, method="POST")
+        try:
+            with request.urlopen(call, timeout=self.config.timeout_seconds) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read(500).decode("utf-8", errors="replace")
+            raise RuntimeError(f"remote LLM HTTP {exc.code}: {detail}") from exc
+        except (error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"remote LLM request failed: {exc}") from exc
+        try:
+            text = result["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, AttributeError, TypeError) as exc:
+            raise RuntimeError("remote LLM response does not contain message content") from exc
+        if not text:
+            raise RuntimeError("remote LLM returned empty text")
+        return text
 
 
 class EvidenceTemplateGenerator:

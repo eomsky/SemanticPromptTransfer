@@ -44,21 +44,33 @@ class LocalDocumentArtifactStore:
     def _scope_segment(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
 
-    def put(self, scope: DocumentScope, filename: str, content: bytes) -> Path:
-        safe_name = Path(filename).name
-        if safe_name in {"", ".", ".."}:
-            raise ValueError("a valid filename is required")
-        target_dir = self.root.joinpath(
+    def document_path(self, scope: DocumentScope) -> Path:
+        return self.root.joinpath(
             self._scope_segment(scope.tenant_id),
             self._scope_segment(scope.case_id),
             self._scope_segment(scope.document_id),
         )
+
+    def derived_path(self, scope: DocumentScope) -> Path:
+        return self.document_path(scope) / "derived"
+
+    def put(self, scope: DocumentScope, filename: str, content: bytes) -> Path:
+        safe_name = Path(filename).name
+        if safe_name in {"", ".", ".."}:
+            raise ValueError("a valid filename is required")
+        target_dir = self.document_path(scope)
         target_dir.mkdir(parents=True, exist_ok=True)
         target = (target_dir / safe_name).resolve()
         if not target.is_relative_to(self.root):
             raise ValueError("upload path escapes storage root")
         target.write_bytes(content)
         return target
+
+    def case_path(self, tenant_id: str, case_id: str) -> Path:
+        return self.root.joinpath(
+            self._scope_segment(tenant_id),
+            self._scope_segment(case_id),
+        )
 
     @staticmethod
     def _delete_tree_files(path: Path) -> int:
@@ -109,3 +121,10 @@ class LocalDocumentArtifactStore:
             original_absent=original is None or not original.exists(),
             derived_deleted=derived_deleted,
         )
+
+    def delete_case(self, tenant_id: str, case_id: str) -> int:
+        """Remove the case-owned artifact subtree without touching other cases."""
+        target = self.case_path(tenant_id, case_id).resolve()
+        if not target.is_relative_to(self.root) or target == self.root:
+            raise ValueError("invalid case artifact path")
+        return self._delete_tree_files(target)
