@@ -63,6 +63,26 @@ class FakeEncoder(EncoderBackend):
 
 
 class ColabPocTests(unittest.TestCase):
+    def test_one_click_colab_notebook_has_single_executable_cell(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook_path = (
+            root / "notebooks/SemanticPromptTransfer_v0.22_COLAB_LAUNCHER.ipynb"
+        )
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        code_cells = [
+            cell for cell in notebook["cells"] if cell["cell_type"] == "code"
+        ]
+        self.assertEqual(len(code_cells), 1)
+        code = "".join(code_cells[0]["source"])
+        compile(code, str(notebook_path), "exec")
+        self.assertIn("drive.mount", code)
+        self.assertIn("COLAB_ASSETS.json", code)
+        self.assertIn("semantic-prompt-transfer[poc]", code)
+        self.assertIn("gzip.open", code)
+        self.assertIn('auth=f"{gate_user}:{gate_password}"', code)
+        self.assertIn("root=runtime_root", code)
+        self.assertNotIn("runtime-assets/v0.22/uploads", code)
+
     def test_downloadable_credit_template_matches_mapping_contract(self):
         example_root = (
             Path(__file__).resolve().parents[1]

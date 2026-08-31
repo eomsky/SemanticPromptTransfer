@@ -2,6 +2,9 @@
 
 ## 0.22.0 - 2026-08-31
 
+- Added a Drive-backed, single-code-cell Colab launcher with asset SHA-256
+  verification, compressed E5 staging, same-origin HTML/API serving, ngrok
+  Basic Auth, rerun cleanup, and ephemeral-only user data.
 - Added a disposable Colab runtime that rejects Google Drive paths and purges all POC state on close.
 - Added ephemeral signup/login using department, name, and employee number; POC ID and password equal the employee number.
 - Replaced the upload-status popup and upload progress bars with inline filenames, stages, and verified `×` deletion.

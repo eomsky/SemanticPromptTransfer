@@ -1,5 +1,9 @@
 # Colab POC 실행 안내
 
+단일 실행 경로는 `COLAB_ONE_CLICK_v0.22.md`와
+`notebooks/SemanticPromptTransfer_v0.22_COLAB_LAUNCHER.ipynb`를 기준으로 한다.
+아래 내용은 API와 HTML을 별도로 구성하는 수동 실행 경로다.
+
 ## 1. 전제
 
 - 애플리케이션 Colab 세션은 테스트 시간에만 유지한다.

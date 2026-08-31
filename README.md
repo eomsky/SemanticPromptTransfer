@@ -44,6 +44,15 @@ that a production Vector DB adapter must preserve.
 
 ## Colab start
 
+The one-notebook path is
+`notebooks/SemanticPromptTransfer_v0.22_COLAB_LAUNCHER.ipynb`. Its single code
+cell mounts the owner's Drive, verifies the approved wheel and compressed E5
+asset, stages both under `/content`, serves the packaged HTML and API on one
+port, and creates an ngrok URL protected by Basic Auth. See
+`docs/COLAB_ONE_CLICK_v0.22.md` for the Drive layout and required Colab Secrets.
+
+The manual server path remains available below.
+
 Install the POC extras and provide the external E5 ONNX model directory:
 
 ```bash
