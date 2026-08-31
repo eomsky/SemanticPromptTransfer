@@ -1,0 +1,108 @@
+name: Release v0.26.5 fixed
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/v0265_fixed.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply source patch
+        run: python .github/v0265_patch.py
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[poc]' pytest httpx build
+      - name: Compile and test
+        run: |
+          python -m compileall -q src tests
+          pytest -q
+      - name: Build wheel
+        run: |
+          rm -rf build
+          python -m build --wheel
+      - name: Create manifest and validation docs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          wheel = Path('dist/semantic_prompt_transfer-0.26.5-py3-none-any.whl')
+          if not wheel.is_file():
+              raise RuntimeError('v0.26.5 wheel missing')
+          sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          manifest = {
+              'schema_version': 3,
+              'release': 'v0.26.5',
+              'package_version': '0.26.5',
+              'drive_root': '/content/drive/MyDrive/SemanticPromptTransfer',
+              'runtime_root': '/content/spt_poc_runtime',
+              'stage_root': '/content/spt_bootstrap_v0265',
+              'base_asset_manifest': 'runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json',
+              'assets': [{
+                  'role': 'wheel',
+                  'source': 'versions/v0.26.5/semantic_prompt_transfer-0.26.5-py3-none-any.whl',
+                  'target': 'release/semantic_prompt_transfer-0.26.5-py3-none-any.whl',
+                  'size': wheel.stat().st_size,
+                  'sha256': sha,
+              }],
+              'demo_assets': [
+                  {'role': 'credit_report', 'source': 'demo-assets/신용조사서_ABC기업_v1.0.xlsx', 'processing': 'deferred_until_review'},
+                  {'role': 'attachment', 'source': 'demo-assets/[ABC기업]사업보고서(2026.03.23).pdf', 'processing': 'deferred_until_review'},
+              ],
+          }
+          Path('notebooks/SemanticPromptTransfer_v0.26.5_COLAB_ASSETS.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          Path('docs/VALIDATION_v0.26.5.md').write_text(
+              '# SemanticPromptTransfer v0.26.5 검증 기록\n\n'
+              '- 전체 pytest 통과\n'
+              '- Python compileall 통과\n'
+              '- 신규 익명 case 최초 조회 시 ABC기업 신용조사서 1개 + 사업보고서 1개가 UPLOADED / progress 0 상태로 복제됨\n'
+              '- 최초 조회 시 parser/encoder 호출 0회, vector count 0 확인\n'
+              '- 파일명 다운로드가 case-owned 복제본 bytes를 반환\n'
+              '- 샘플 삭제 후 같은 case 재조회에서 재-seed 되지 않음\n'
+              '- Drive demo 원본은 읽기 전용이며 사용자 삭제 대상이 아님\n'
+              f'- wheel bytes: {wheel.stat().st_size}\n'
+              f'- wheel SHA-256: `{sha}`\n',
+              encoding='utf-8',
+          )
+          Path('docs/COLAB_ONE_CLICK_v0.26.5.md').write_text(
+              '# SemanticPromptTransfer v0.26.5 Colab 운영\n\n'
+              'Drive의 `demo-assets/신용조사서_ABC기업_v1.0.xlsx`와 `demo-assets/[ABC기업]사업보고서(2026.03.23).pdf`를 각 익명 case의 Colab ephemeral storage로 최초 1회 복제한다. 복제 직후 상태는 UPLOADED / progress 0이며 심사의견 생성 전에는 파싱·벡터 임베딩을 수행하지 않는다. 파일명 클릭은 case 복제본 다운로드, ×는 case 복제본 및 존재하는 파생 벡터 삭제다. 같은 case에서 삭제한 demo는 새로고침해도 다시 생성하지 않는다.\n',
+              encoding='utf-8',
+          )
+          PY
+      - name: Re-test release tree
+        run: |
+          python -m compileall -q src tests
+          pytest -q
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SemanticPromptTransfer-v0.26.5-release
+          if-no-files-found: error
+          path: |
+            dist/semantic_prompt_transfer-0.26.5-py3-none-any.whl
+            notebooks/SemanticPromptTransfer_v0.26.5_COLAB_LAUNCHER.ipynb
+            notebooks/SemanticPromptTransfer_v0.26.5_COLAB_ASSETS.json
+            docs/VALIDATION_v0.26.5.md
+            docs/COLAB_ONE_CLICK_v0.26.5.md
+      - name: Commit release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/v0265.trigger .github/v0265_fixed.trigger .github/v0265_patch.py .github/workflows/release_v0265.yml .github/workflows/release_v0265_fixed.yml
+          git add -A
+          git commit -m 'Release v0.26.5 demo-ready deferred uploads'
+          git push origin HEAD:main
