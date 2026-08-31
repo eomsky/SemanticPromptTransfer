@@ -1,6 +1,6 @@
-# semantic-prompt-transfer 0.26.0
+# semantic-prompt-transfer 0.26.1
 
-SemanticPromptTransfer v0.26 is a time-boxed Colab POC implementation for the
+SemanticPromptTransfer v0.26.1 is a time-boxed Colab POC implementation for the
 credit-review workflow. The browser remains a thin HTML client. Uploads,
 extracted facts, L0 vectors, progress, and generated Word files live only in
 the Colab runtime and are removed when that runtime closes. Google Drive is
@@ -58,7 +58,7 @@ that a production Vector DB adapter must preserve.
 ## Colab start
 
 The operating notebook is
-`notebooks/SemanticPromptTransfer_v0.26_COLAB_LAUNCHER.ipynb`. It provides three
+`notebooks/SemanticPromptTransfer_v0.26.1_COLAB_LAUNCHER.ipynb`. It provides three
 pre-populated editable few-shot cells, mounts the owner's Drive, verifies the
 approved wheel, starts `google/gemma-4-26B-A4B-it` with vLLM on one A100 80 GB,
 loads a batched GPU E5 encoder, serves the packaged HTML and API on one port,
@@ -124,13 +124,13 @@ GET    /api/v1/review-jobs/{job_id}/opinion.docx
 POST   /api/v1/review-jobs/{job_id}/chat/stream
 ```
 
-The v0.26 notebook runs the API in anonymous POC mode. The packaged server still
+The v0.26.1 notebook runs the API in anonymous POC mode. The packaged server still
 retains the optional identity routes for non-anonymous deployments, but the
 notebook HTML neither calls them nor sends `X-POC-Token`.
 
 ## Operational boundary
 
-v0.26 is suitable for a scheduled single-Colab POC. It is not yet a production
+v0.26.1 is suitable for a scheduled single-Colab POC. It is not yet a production
 bank deployment. Production still requires enterprise SSO/RBAC, password policy,
 malware scanning, encrypted persistent object storage, a managed Vector DB,
 distributed jobs, audit retention, runtime recovery, official Excel and Word

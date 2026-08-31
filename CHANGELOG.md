@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26.1 - 2026-08-31
+
+- Isolated vLLM and its dependency resolver in a dedicated `uv` virtual
+  environment instead of mutating the active Colab kernel packages.
+- Added an E5 dependency probe before the large model download and delayed the
+  first application import until after vLLM installation, preventing mixed
+  NumPy/SciPy modules in one Python process.
+- Preserved the v0.26 runtime assets unchanged and published separate v0.26.1
+  wheel, manifest, notebook, documentation, and Drive paths.
+
 ## 0.26.0 - 2026-08-31
 
 - Added post-review free chat that appears only after the complete A–E stream,

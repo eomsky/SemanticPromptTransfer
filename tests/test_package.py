@@ -10,6 +10,7 @@ import numpy as np
 from openpyxl import Workbook
 
 from semantic_prompt_transfer import (
+    __version__,
     CaseContext,
     CreditFact,
     CreditFieldMapping,
@@ -117,6 +118,9 @@ def minimal_master():
 
 
 class PackageTests(unittest.TestCase):
+    def test_runtime_version_is_v0261(self):
+        self.assertEqual(__version__, "0.26.1")
+
     def test_default_is_l0_memory(self):
         config = PipelineConfig(model_dir="unused")
         self.assertEqual(config.representation_level, RepresentationLevel.PLAIN)

@@ -121,7 +121,33 @@ class ColabPocTests(unittest.TestCase):
         self.assertIn('secret("NGROK_AUTHTOKEN")', code)
         self.assertLess(code.index("ngrok.connect"), code.index("loading vLLM"))
 
-    def test_v025_and_v026_assets_are_versioned_independently(self):
+    def test_v0261_isolates_vllm_from_the_e5_kernel(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.26.1_COLAB_LAUNCHER.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+        for cell in notebook["cells"]:
+            if cell.get("cell_type") == "code":
+                compile("".join(cell.get("source", [])), notebook_path.name, "exec")
+        self.assertIn('RELEASE = "v0.26.1"', code)
+        self.assertIn('PACKAGE_VERSION = "0.26.1"', code)
+        self.assertIn('log("installing isolated vLLM GPU runtime")', code)
+        self.assertIn('uv_command, "venv", "--python", sys.executable', code)
+        self.assertIn('"pip", "install", "--python", str(vllm_python)', code)
+        self.assertIn('str(vllm_executable)', code)
+        self.assertIn('dependency_probe = subprocess.run(', code)
+        self.assertIn('E5 dependency stack ready · vLLM environment isolated', code)
+        self.assertNotIn('"pip", "install", "--system", "-U", "vllm"', code)
+        self.assertLess(
+            code.index('installing isolated vLLM GPU runtime'),
+            code.index('from semantic_prompt_transfer import ('),
+        )
+
+    def test_v025_v026_and_v0261_assets_are_versioned_independently(self):
         root = Path(__file__).resolve().parents[1] / "notebooks"
         v025 = json.loads(
             (root / "SemanticPromptTransfer_v0.25_COLAB_ASSETS.json").read_text(
@@ -133,11 +159,24 @@ class ColabPocTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        v0261 = json.loads(
+            (root / "SemanticPromptTransfer_v0.26.1_COLAB_ASSETS.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual((v025["release"], v025["package_version"]), ("v0.25", "0.25.0"))
         self.assertEqual((v026["release"], v026["package_version"]), ("v0.26", "0.26.0"))
+        self.assertEqual(
+            (v0261["release"], v0261["package_version"]),
+            ("v0.26.1", "0.26.1"),
+        )
         self.assertTrue(v025["assets"][0]["source"].startswith("versions/v0.25/"))
         self.assertTrue(v026["assets"][0]["source"].startswith("versions/v0.26/"))
+        self.assertTrue(
+            v0261["assets"][0]["source"].startswith("versions/v0.26.1/")
+        )
         self.assertNotEqual(v025["assets"][0]["sha256"], v026["assets"][0]["sha256"])
+        self.assertNotEqual(v026["assets"][0]["sha256"], v0261["assets"][0]["sha256"])
 
     def test_one_click_colab_notebook_has_single_executable_cell(self):
         root = Path(__file__).resolve().parents[1]
