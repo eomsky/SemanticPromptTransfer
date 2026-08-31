@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.2 - 2026-08-31
+
+- Forced Gemma 4 MoE to use the native vLLM model implementation instead of
+  falling back to the Transformers modeling backend during engine startup.
+- Aligned the single-A100 BF16 reservation with the official Gemma 4 recipe by
+  raising `--gpu-memory-utilization` from 0.88 to 0.90 while retaining the
+  conservative 16,384-token context and four-sequence cap.
+- Replaced the final-8,000-character error tail with root-cause-first engine log
+  extraction so CUDA, kernel, model-backend, and weight-loading failures remain
+  visible in Colab exceptions.
+- Preserved v0.26.1 artifacts unchanged and published separate v0.26.2 assets.
+
 ## 0.26.1 - 2026-08-31
 
 - Isolated vLLM and its dependency resolver in a dedicated `uv` virtual

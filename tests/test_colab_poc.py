@@ -147,7 +147,29 @@ class ColabPocTests(unittest.TestCase):
             code.index('from semantic_prompt_transfer import ('),
         )
 
-    def test_v025_v026_and_v0261_assets_are_versioned_independently(self):
+    def test_v0262_forces_native_gemma4_and_preserves_root_cause_log(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook_path = root / "notebooks/SemanticPromptTransfer_v0.26.2_COLAB_LAUNCHER.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in notebook["cells"]
+            if cell.get("cell_type") == "code"
+        )
+        for cell in notebook["cells"]:
+            if cell.get("cell_type") == "code":
+                compile("".join(cell.get("source", [])), notebook_path.name, "exec")
+        self.assertIn('RELEASE = "v0.26.2"', code)
+        self.assertIn('PACKAGE_VERSION = "0.26.2"', code)
+        self.assertIn('"--model-impl", "vllm"', code)
+        self.assertIn('"--gpu-memory-utilization", "0.90"', code)
+        self.assertIn('full_log.find("EngineCore failed to start")', code)
+        self.assertIn('Full log: {vllm_log_path}', code)
+        self.assertNotIn('[-8000:]', code)
+        self.assertIn('"--max-model-len", "16384"', code)
+        self.assertIn('"--max-num-seqs", "4"', code)
+
+    def test_v025_v026_v0261_and_v0262_assets_are_versioned_independently(self):
         root = Path(__file__).resolve().parents[1] / "notebooks"
         v025 = json.loads(
             (root / "SemanticPromptTransfer_v0.25_COLAB_ASSETS.json").read_text(
@@ -164,19 +186,32 @@ class ColabPocTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        v0262 = json.loads(
+            (root / "SemanticPromptTransfer_v0.26.2_COLAB_ASSETS.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual((v025["release"], v025["package_version"]), ("v0.25", "0.25.0"))
         self.assertEqual((v026["release"], v026["package_version"]), ("v0.26", "0.26.0"))
         self.assertEqual(
             (v0261["release"], v0261["package_version"]),
             ("v0.26.1", "0.26.1"),
         )
+        self.assertEqual(
+            (v0262["release"], v0262["package_version"]),
+            ("v0.26.2", "0.26.2"),
+        )
         self.assertTrue(v025["assets"][0]["source"].startswith("versions/v0.25/"))
         self.assertTrue(v026["assets"][0]["source"].startswith("versions/v0.26/"))
         self.assertTrue(
             v0261["assets"][0]["source"].startswith("versions/v0.26.1/")
         )
+        self.assertTrue(
+            v0262["assets"][0]["source"].startswith("versions/v0.26.2/")
+        )
         self.assertNotEqual(v025["assets"][0]["sha256"], v026["assets"][0]["sha256"])
         self.assertNotEqual(v026["assets"][0]["sha256"], v0261["assets"][0]["sha256"])
+        self.assertNotEqual(v0261["assets"][0]["sha256"], v0262["assets"][0]["sha256"])
 
     def test_one_click_colab_notebook_has_single_executable_cell(self):
         root = Path(__file__).resolve().parents[1]
