@@ -4,7 +4,7 @@
 - 작성 기준일: 2026-08-31
 - 현재 패키지: `semantic-prompt-transfer==0.22.0`
 - 현재 기본 표현: `L0 (semantic_linearized)`
-- 현재 GitHub 기준 커밋: `846e59e8c64af4e6eb567df892e2010e84960d9e`
+- 현재 GitHub 기능 구현 기준 커밋: `846e59e8c64af4e6eb567df892e2010e84960d9e`
 - 현재 판정: 제한된 시간대에 실행하는 단일 Colab POC 기준 구현 및 패키지 검증 완료
 
 > 이 문서는 요구사항 문서나 README를 대체하지 않는다. 대화에서 결정된 배경,
@@ -670,7 +670,11 @@ versions/v0.23/
 
 - 저장소: `https://github.com/eomsky/SemanticPromptTransfer`
 - 브랜치: `main`
-- 현재 HEAD: `846e59e8c64af4e6eb567df892e2010e84960d9e`
+- v0.22 기능 구현 기준 커밋: `846e59e8c64af4e6eb567df892e2010e84960d9e`
+
+이 문서와 같은 관리 문서를 추가하면 `main`의 최신 커밋은 위 기능 기준 커밋보다
+앞설 수 있다. 다음 대화에서는 브랜치 HEAD를 다시 읽되, v0.22 기능 기준선과
+관리 문서 커밋을 구분한다.
 
 주요 커밋은 다음과 같다.
 
