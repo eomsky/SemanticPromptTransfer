@@ -1,32 +1,34 @@
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
+import numpy as np
 from openpyxl import Workbook
 
 from semantic_prompt_transfer import (
     CaseContext,
+    CpuGenerationConfig,
     CreditReportParser,
     CreditReportTemplate,
     DocumentScope,
     FewShotRegistry,
     FewShotSelector,
+    DocumentKind,
+    DocumentLifecycleService,
+    FileStatus,
+    InMemoryVectorStore,
+    LocalDocumentArtifactStore,
+    OperationalApplicationService,
+    OperationalRegistry,
     OfflineIndexBuilder,
     OnlineRAGService,
     PipelineConfig,
     ReviewGenerationOrchestrator,
+    default_cpu_generator,
 )
-
-
-class CitationOnlyLLM:
-    def generate(self, messages):
-        match = re.search(r"evidence_id=([^\n]+)", messages[1]["content"])
-        if not match:
-            raise RuntimeError("smoke prompt has no evidence")
-        return "제공된 근거를 기준으로 현황과 주요 변동요인 및 향후 확인사항을 검토하였다. " + match.group(1)
+from semantic_prompt_transfer._chunk_builder_base import ChunkRecord
 
 
 def master(text: str):
@@ -124,7 +126,10 @@ def main(output_dir: str, model_dir: str) -> int:
     )
     health = online.start()
     selector = FewShotSelector(FewShotRegistry.from_json(example_root / "few_shots.json"))
-    opinion_path = output / "SemanticPromptTransfer_v0.20_SMOKE_OPINION.docx"
+    opinion_path = output / "SemanticPromptTransfer_v0.21_SMOKE_OPINION.docx"
+    cpu_generator = default_cpu_generator(
+        CpuGenerationConfig(local_files_only=True, max_new_tokens=192)
+    )
     generation = ReviewGenerationOrchestrator(online, selector).generate(
         CaseContext(
             tenant_id="example",
@@ -135,7 +140,7 @@ def main(output_dir: str, model_dir: str) -> int:
             situation_tags=("매출성장",),
         ),
         list(credit.facts),
-        CitationOnlyLLM(),
+        cpu_generator,
         opinion_path,
     )
 
@@ -153,8 +158,49 @@ def main(output_dir: str, model_dir: str) -> int:
         "현금흐름",
         filters={"tenant_id": "example", "case_id": "case-001"},
     )
+
+    storage = LocalDocumentArtifactStore(output / "storage")
+    registry = OperationalRegistry(output / "operational_registry.sqlite")
+    vector = InMemoryVectorStore()
+    lifecycle = DocumentLifecycleService(registry, vector, storage)
+    application = OperationalApplicationService(registry, lifecycle)
+    ui_scope = DocumentScope("example", "case-001", "ui-delete-doc")
+    ui_source = storage.put(ui_scope, "ui-delete.pdf", b"sample pdf")
+    application.register_upload(
+        ui_scope,
+        filename=ui_source.name,
+        document_kind=DocumentKind.ATTACHMENT,
+        size_bytes=ui_source.stat().st_size,
+        storage_uri=str(ui_source),
+    )
+    for file_status in (
+        FileStatus.VALIDATING,
+        FileStatus.PARSING,
+        FileStatus.INDEXING,
+        FileStatus.READY,
+    ):
+        application.update_upload(ui_scope, file_status)
+    vector.upsert_document(
+        [
+            ChunkRecord(
+                "CH_UI_1",
+                "sample",
+                "sample",
+                {
+                    "tenant_id": ui_scope.tenant_id,
+                    "case_id": ui_scope.case_id,
+                    "document_id": ui_scope.document_id,
+                    "global_chunk_id": "GCH_UI_1",
+                },
+            )
+        ],
+        np.ones((1, 8), dtype=np.float32),
+    )
+    ui_before = application.list_uploads("example", "case-001")
+    ui_delete = application.delete_upload(ui_scope)
+    ui_after = application.list_uploads("example", "case-001")
     report = {
-        "package_version": "0.20.0",
+        "package_version": "0.21.0",
         "real_encoder": True,
         "initial_index_stats": stats,
         "initial_health": health,
@@ -170,12 +216,17 @@ def main(output_dir: str, model_dir: str) -> int:
         },
         "progress": [event.to_dict() for event in generation.progress_events],
         "opinion_path": str(opinion_path),
+        "cpu_generator_backend": cpu_generator.last_backend,
+        "cpu_generator_primary_error": cpu_generator.last_error,
         "delete_result": delete_result,
+        "html_contract_before_delete": ui_before,
+        "html_contract_delete_result": ui_delete,
+        "html_contract_after_delete": ui_after,
         "remaining_document_ids": sorted(
             {hit["metadata"].get("document_id") for hit in remaining["hits"]}
         ),
     }
-    (output / "SemanticPromptTransfer_v0.20_OPERATIONAL_SMOKE.json").write_text(
+    (output / "SemanticPromptTransfer_v0.21_OPERATIONAL_SMOKE.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )

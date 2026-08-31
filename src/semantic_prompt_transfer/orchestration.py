@@ -14,6 +14,7 @@ from .domain import (
     ReviewSectionDraft,
 )
 from .fewshot import FewShotSelector
+from .llm import TextGenerator
 from .query_profiles import QueryProfileRegistry
 from .registry import OperationalRegistry
 from .review import EvidenceAssembler, ReviewPromptBuilder, ReviewPromptPackage
@@ -21,8 +22,7 @@ from .review_docx import OpinionDocumentBuilder
 from .validation import OpinionValidator
 
 
-class LLMClient(Protocol):
-    def generate(self, messages: list[dict[str, str]]) -> str: ...
+LLMClient = TextGenerator
 
 
 class AttachmentRetriever(Protocol):
@@ -65,6 +65,7 @@ class ReviewGenerationOrchestrator:
         validator: OpinionValidator | None = None,
         document_builder: OpinionDocumentBuilder | None = None,
         registry: OperationalRegistry | None = None,
+        llm: TextGenerator | None = None,
     ) -> None:
         self.attachment_retriever = attachment_retriever
         self.few_shot_selector = few_shot_selector
@@ -74,15 +75,19 @@ class ReviewGenerationOrchestrator:
         self.validator = validator or OpinionValidator()
         self.document_builder = document_builder or OpinionDocumentBuilder()
         self.registry = registry
+        self.llm = llm
 
     def generate(
         self,
         case: CaseContext,
         credit_facts: list[CreditFact],
-        llm: LLMClient,
+        llm: LLMClient | None,
         output_path: str | Path,
         progress_callback: Callable[[ProgressEvent], None] | None = None,
     ) -> ReviewGenerationResult:
+        generator = llm or self.llm
+        if generator is None:
+            raise ValueError("a text generator must be provided to the orchestrator or generate()")
         job = self.registry.create_job(case.tenant_id, case.case_id) if self.registry else None
         job_id = job.job_id if job else uuid.uuid4().hex
         events: list[ProgressEvent] = []
@@ -119,7 +124,7 @@ class ReviewGenerationOrchestrator:
                 )
                 prompt = self.prompt_builder.build(case, item, query, evidence, examples)
                 prompts.append(prompt)
-                text = llm.generate(prompt.messages)
+                text = generator.generate(prompt.messages)
                 validation = self.validator.validate(text, evidence, examples)
                 if not validation.valid:
                     raise ReviewValidationError(

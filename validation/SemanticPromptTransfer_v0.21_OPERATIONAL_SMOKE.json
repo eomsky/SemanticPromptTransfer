@@ -1,0 +1,232 @@
+{
+  "package_version": "0.21.0",
+  "real_encoder": true,
+  "initial_index_stats": {
+    "record_count": 2,
+    "dimension": 384,
+    "representation_level": 0,
+    "document_scopes": [
+      [
+        "example",
+        "case-001",
+        "attachment-a"
+      ],
+      [
+        "example",
+        "case-001",
+        "attachment-b"
+      ]
+    ]
+  },
+  "initial_health": {
+    "status": "ready",
+    "package_version": "0.21.0",
+    "representation_level": 0,
+    "index_mode": "LOAD",
+    "index_stats": {
+      "record_count": 2,
+      "dimension": 384,
+      "representation_level": 0,
+      "document_scopes": [
+        [
+          "example",
+          "case-001",
+          "attachment-a"
+        ],
+        [
+          "example",
+          "case-001",
+          "attachment-b"
+        ]
+      ]
+    },
+    "uptime_seconds": 0.0
+  },
+  "credit_fact_count": 3,
+  "generated_sections": 5,
+  "selected_few_shots": {
+    "A": [
+      "FS-A-MANUFACTURING-WC-001"
+    ],
+    "B": [
+      "FS-B-GENERAL-001"
+    ],
+    "C": [
+      "FS-C-GENERAL-001"
+    ],
+    "D": [
+      "FS-D-GENERAL-001"
+    ],
+    "E": [
+      "FS-E-GENERAL-001"
+    ]
+  },
+  "evidence_tiers": {
+    "A": [
+      1,
+      2,
+      3,
+      3
+    ],
+    "B": [
+      1,
+      1,
+      2,
+      3,
+      3
+    ],
+    "C": [
+      2,
+      3,
+      3
+    ],
+    "D": [
+      2,
+      3,
+      3
+    ],
+    "E": [
+      1,
+      2,
+      3,
+      3
+    ]
+  },
+  "progress": [
+    {
+      "stage": "PRECHECK",
+      "progress": 5,
+      "message": "입력자료와 심사범위를 확인했습니다.",
+      "review_item": null
+    },
+    {
+      "stage": "CREDIT_REPORT_LOAD",
+      "progress": 20,
+      "message": "신용조사서 정형자료를 로드했습니다.",
+      "review_item": null
+    },
+    {
+      "stage": "ATTACHMENT_RETRIEVAL",
+      "progress": 30,
+      "message": "기타 첨부파일 검색을 시작합니다.",
+      "review_item": null
+    },
+    {
+      "stage": "ITEM_GENERATION",
+      "progress": 40,
+      "message": "A 항목 생성과 검증을 완료했습니다.",
+      "review_item": "A"
+    },
+    {
+      "stage": "ITEM_GENERATION",
+      "progress": 50,
+      "message": "B 항목 생성과 검증을 완료했습니다.",
+      "review_item": "B"
+    },
+    {
+      "stage": "ITEM_GENERATION",
+      "progress": 60,
+      "message": "C 항목 생성과 검증을 완료했습니다.",
+      "review_item": "C"
+    },
+    {
+      "stage": "ITEM_GENERATION",
+      "progress": 70,
+      "message": "D 항목 생성과 검증을 완료했습니다.",
+      "review_item": "D"
+    },
+    {
+      "stage": "ITEM_GENERATION",
+      "progress": 80,
+      "message": "E 항목 생성과 검증을 완료했습니다.",
+      "review_item": "E"
+    },
+    {
+      "stage": "VALIDATING",
+      "progress": 90,
+      "message": "다섯 항목의 항목별 근거·수치 검증 결과를 집계했습니다.",
+      "review_item": null
+    },
+    {
+      "stage": "DOCX_RENDER",
+      "progress": 98,
+      "message": "심사의견 Word 파일을 생성했습니다.",
+      "review_item": null
+    },
+    {
+      "stage": "COMPLETE",
+      "progress": 100,
+      "message": "다운로드할 수 있습니다.",
+      "review_item": null
+    }
+  ],
+  "opinion_path": "/workspace/scratch/850e53d63ac9/v021_output/SemanticPromptTransfer_v0.21_SMOKE_OPINION.docx",
+  "cpu_generator_backend": "EvidenceTemplateGenerator",
+  "cpu_generator_primary_error": "RuntimeError: install semantic-prompt-transfer[llm-cpu] to use TransformersCpuGenerator",
+  "delete_result": {
+    "deleted_chunks": 1,
+    "scope": {
+      "tenant_id": "example",
+      "case_id": "case-001",
+      "document_id": "attachment-a",
+      "financial_scope": "unspecified",
+      "source_version": null,
+      "source_filename": "attachment-a.pdf",
+      "document_kind": "attachment",
+      "loan_type": null,
+      "industry_code": null,
+      "tags": []
+    },
+    "stats": {
+      "record_count": 1,
+      "dimension": 384,
+      "representation_level": 0,
+      "document_scopes": [
+        [
+          "example",
+          "case-001",
+          "attachment-b"
+        ]
+      ]
+    }
+  },
+  "html_contract_before_delete": {
+    "tenant_id": "example",
+    "case_id": "case-001",
+    "credit_report": [],
+    "attachments": [
+      {
+        "document_id": "ui-delete-doc",
+        "filename": "ui-delete.pdf",
+        "document_kind": "attachment",
+        "file_type": "PDF",
+        "size_bytes": 10,
+        "progress_percent": 100,
+        "progress_stage": "완료",
+        "processing_message": "완료",
+        "status": "READY",
+        "can_delete": true
+      }
+    ]
+  },
+  "html_contract_delete_result": {
+    "status": "DELETED",
+    "deleted_vectors": 1,
+    "remaining_vectors": 0,
+    "original_deleted": true,
+    "original_absent": true,
+    "derived_deleted": 0,
+    "idempotent": false,
+    "document_id": "ui-delete-doc",
+    "removed_from_active_list": true
+  },
+  "html_contract_after_delete": {
+    "tenant_id": "example",
+    "case_id": "case-001",
+    "credit_report": [],
+    "attachments": []
+  },
+  "remaining_document_ids": [
+    "attachment-b"
+  ]
+}

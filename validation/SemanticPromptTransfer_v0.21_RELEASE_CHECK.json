@@ -1,0 +1,13 @@
+{
+  "version": "0.21.0",
+  "checks": {
+    "pyproject_runtime_version_match": true,
+    "changelog_has_version": true,
+    "requirements_has_version": true,
+    "html_source_exists": true,
+    "release_management_exists": true,
+    "wheel_has_html": true,
+    "wheel_has_version_module": true
+  },
+  "passed": true
+}

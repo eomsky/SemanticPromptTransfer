@@ -49,6 +49,32 @@ class FileStatus(str, Enum):
     DELETING = "DELETING"
     DELETED = "DELETED"
 
+    @property
+    def progress_stage(self) -> str:
+        return {
+            FileStatus.UPLOADED: "파일적재",
+            FileStatus.VALIDATING: "파일검증",
+            FileStatus.PARSING: "파일해석",
+            FileStatus.INDEXING: "벡터임베딩",
+            FileStatus.READY: "완료",
+            FileStatus.FAILED: "실패",
+            FileStatus.DELETING: "삭제중",
+            FileStatus.DELETED: "삭제완료",
+        }[self]
+
+    @property
+    def default_progress(self) -> int:
+        return {
+            FileStatus.UPLOADED: 15,
+            FileStatus.VALIDATING: 25,
+            FileStatus.PARSING: 45,
+            FileStatus.INDEXING: 70,
+            FileStatus.READY: 100,
+            FileStatus.FAILED: 0,
+            FileStatus.DELETING: 100,
+            FileStatus.DELETED: 100,
+        }[self]
+
 
 class JobStage(str, Enum):
     QUEUED = "QUEUED"

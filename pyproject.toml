@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-prompt-transfer"
-version = "0.20.0"
-description = "Operational credit-review RAG with source tiers, loan-type few-shot selection, lifecycle controls, and evidence prompts"
+version = "0.21.0"
+description = "Operational credit-review RAG with HTML-aligned lifecycle controls and a replaceable CPU text generator"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "LicenseRef-Proprietary"
@@ -33,6 +33,8 @@ dependencies = [
 
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0,<2.0"]
+llm-cpu = ["transformers>=4.48,<6.0", "torch>=2.2,<3.0", "accelerate>=1.0,<2.0"]
+web = ["fastapi>=0.115,<1.0", "python-multipart>=0.0.20,<1.0", "uvicorn>=0.34,<1.0"]
 
 [project.urls]
 Homepage = "https://github.com/eomsky/SemanticPromptTransfer"
@@ -52,5 +54,6 @@ semantic_prompt_transfer = [
   "examples/stx_engine/*.json",
   "examples/stx_engine/*.md",
   "examples/operational/*.json",
-  "examples/operational/*.md"
+  "examples/operational/*.md",
+  "examples/operational/*.html"
 ]

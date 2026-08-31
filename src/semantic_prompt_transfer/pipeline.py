@@ -17,7 +17,7 @@ from .prompting import PromptPackage, PromptPackageBuilder
 from .retrieval import RetrievalEngine
 
 
-PACKAGE_VERSION = "0.20.0"
+from .version import PACKAGE_VERSION
 
 
 def _sha256(path: Path) -> str:

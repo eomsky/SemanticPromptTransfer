@@ -1,0 +1,23 @@
+{
+  "baseline": "v0.20.0",
+  "candidate": "v0.21.0",
+  "comparison_scope": [
+    "chunk_id",
+    "embedding_text",
+    "document"
+  ],
+  "configuration": {
+    "max_chars": 1800,
+    "text_overlap_chars": 180,
+    "table_overlap_rows": 0
+  },
+  "v020": {
+    "count": 1090,
+    "sha256": "ee4ecc821a75f8d482208756bb20c99babdd4be48c60d5b3d4053fb10c1e67cf"
+  },
+  "v021": {
+    "count": 1090,
+    "sha256": "ee4ecc821a75f8d482208756bb20c99babdd4be48c60d5b3d4053fb10c1e67cf"
+  },
+  "identical": true
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,8 @@ from semantic_prompt_transfer import (
     FewShotSelector,
     FileStatus,
     InMemoryVectorStore,
+    LocalDocumentArtifactStore,
+    OperationalApplicationService,
     OpinionDocumentBuilder,
     OpinionValidator,
     OperationalRegistry,
@@ -36,6 +39,9 @@ from semantic_prompt_transfer import (
     ReviewPromptBuilder,
     ReviewSectionDraft,
     SourceTier,
+    EvidenceTemplateGenerator,
+    FallbackGenerator,
+    TransformersCpuGenerator,
 )
 from semantic_prompt_transfer._chunk_builder_base import ChunkRecord
 from semantic_prompt_transfer.encoding import EncoderBackend
@@ -378,26 +384,190 @@ class OperationalPackageTests(unittest.TestCase):
         self.assertIn("few_shot_token_leakage", {issue.code for issue in invalid.issues})
 
     def test_registry_and_vector_delete_lifecycle(self):
-        registry = OperationalRegistry()
-        registry.register_document(
-            tenant_id="tenant", case_id="case", document_id="doc", filename="a.pdf",
-            document_kind=DocumentKind.ATTACHMENT,
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / "tenant" / "case" / "doc" / "a.pdf"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"pdf")
+            derived = root / "derived" / "tenant" / "case" / "doc"
+            derived.mkdir(parents=True)
+            (derived / "master.json").write_text("{}", encoding="utf-8")
+
+            registry = OperationalRegistry()
+            registry.register_document(
+                tenant_id="tenant", case_id="case", document_id="doc", filename="a.pdf",
+                document_kind=DocumentKind.ATTACHMENT,
+                storage_uri=str(original), derived_uri=str(derived),
+            )
+            for status in (
+                FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING, FileStatus.READY
+            ):
+                registry.transition_document("tenant", "case", "doc", status)
+            vector = InMemoryVectorStore()
+            record = ChunkRecord(
+                "CH_TEXT_00001", "text", "text",
+                {"tenant_id": "tenant", "case_id": "case", "document_id": "doc", "global_chunk_id": "GCH-1"},
+            )
+            vector.upsert_document([record], np.ones((1, 8), dtype=np.float32))
+            deleted = DocumentLifecycleService(
+                registry, vector, LocalDocumentArtifactStore(root)
+            ).delete(DocumentScope("tenant", "case", "doc"))
+            self.assertEqual(deleted["deleted_vectors"], 1)
+            self.assertEqual(deleted["remaining_vectors"], 0)
+            self.assertTrue(deleted["original_absent"])
+            self.assertFalse(original.exists())
+            self.assertFalse(derived.exists())
+            self.assertEqual(registry.get_document("tenant", "case", "doc").status, FileStatus.DELETED)
+
+    def test_html_application_contract_lists_progress_and_deletes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "attachment.pdf"
+            source.write_bytes(b"pdf")
+            registry = OperationalRegistry()
+            vector = InMemoryVectorStore()
+            lifecycle = DocumentLifecycleService(
+                registry, vector, LocalDocumentArtifactStore(root)
+            )
+            service = OperationalApplicationService(registry, lifecycle)
+            scope = DocumentScope("tenant", "case", "attachment-1")
+            row = service.register_upload(
+                scope,
+                filename="attachment.pdf",
+                document_kind=DocumentKind.ATTACHMENT,
+                size_bytes=source.stat().st_size,
+                storage_uri=str(source),
+            )
+            self.assertEqual(row["progress_stage"], "파일적재")
+            for status in (
+                FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING, FileStatus.READY
+            ):
+                row = service.update_upload(scope, status)
+            self.assertEqual(row["progress_percent"], 100)
+            self.assertEqual(service.list_uploads("tenant", "case")["attachments"][0]["file_type"], "PDF")
+            result = service.delete_upload(scope)
+            self.assertTrue(result["removed_from_active_list"])
+            self.assertEqual(service.list_uploads("tenant", "case")["attachments"], [])
+
+    def test_delete_does_not_remove_file_when_vectors_remain(self):
+        class RefusingVectorStore(InMemoryVectorStore):
+            def delete_document(self, scope):
+                return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            source.write_bytes(b"pdf")
+            registry = OperationalRegistry()
+            registry.register_document(
+                tenant_id="tenant", case_id="case", document_id="doc",
+                filename="source.pdf", document_kind=DocumentKind.ATTACHMENT,
+                storage_uri=str(source),
+            )
+            for status in (
+                FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING, FileStatus.READY
+            ):
+                registry.transition_document("tenant", "case", "doc", status)
+            vector = RefusingVectorStore()
+            vector.upsert_document(
+                [ChunkRecord(
+                    "CH", "text", "text",
+                    {"tenant_id": "tenant", "case_id": "case", "document_id": "doc", "global_chunk_id": "GCH"},
+                )],
+                np.ones((1, 8), dtype=np.float32),
+            )
+            lifecycle = DocumentLifecycleService(
+                registry, vector, LocalDocumentArtifactStore(root)
+            )
+            with self.assertRaises(RuntimeError):
+                lifecycle.delete(DocumentScope("tenant", "case", "doc"))
+            self.assertTrue(source.exists())
+            self.assertEqual(
+                registry.get_document("tenant", "case", "doc").status,
+                FileStatus.FAILED,
+            )
+
+    def test_cpu_generator_adapter_and_grounded_fallback(self):
+        class Broken:
+            def generate(self, messages):
+                raise RuntimeError("model unavailable")
+
+        messages = [
+            {"role": "system", "content": "grounded"},
+            {
+                "role": "user",
+                "content": (
+                    "[CURRENT_CASE_EVIDENCE]\n[TIER_1 EVIDENCE]\n"
+                    "evidence_id=EV-1\ndocument_id=credit\nsource_filename=credit.xlsx\n"
+                    "page=None\ncontent=매출액=100 백만원\n\n[작성요청]\n작성"
+                ),
+            },
+        ]
+        fallback = FallbackGenerator(Broken(), EvidenceTemplateGenerator())
+        text = fallback.generate(messages)
+        self.assertIn("EV-1", text)
+        self.assertIn("100", text)
+        self.assertEqual(fallback.last_backend, "EvidenceTemplateGenerator")
+
+        class FakeTokenizer:
+            eos_token_id = 0
+            def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+                return "prompt"
+            def __call__(self, prompt, return_tensors):
+                return {"input_ids": np.array([[1, 2]], dtype=np.int64)}
+            def decode(self, ids, skip_special_tokens):
+                return "CPU draft"
+
+        class FakeModel:
+            def generate(self, **kwargs):
+                return np.array([[1, 2, 3, 4]], dtype=np.int64)
+
+        generated = TransformersCpuGenerator(
+            tokenizer=FakeTokenizer(), model=FakeModel()
+        ).generate(messages)
+        self.assertEqual(generated, "CPU draft")
+
+    def test_v020_registry_migrates_progress_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "registry.sqlite"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                """CREATE TABLE documents (
+                    tenant_id TEXT NOT NULL, case_id TEXT NOT NULL, document_id TEXT NOT NULL,
+                    filename TEXT NOT NULL, document_kind TEXT NOT NULL, status TEXT NOT NULL,
+                    source_hash TEXT, size_bytes INTEGER, error TEXT,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                    PRIMARY KEY (tenant_id, case_id, document_id)
+                )"""
+            )
+            connection.execute(
+                "INSERT INTO documents VALUES ('t','c','d','a.pdf','attachment','READY',NULL,10,NULL,1,1)"
+            )
+            connection.commit()
+            connection.close()
+            migrated = OperationalRegistry(path).get_document("t", "c", "d")
+            self.assertEqual(migrated.progress, 100)
+            self.assertEqual(migrated.status.progress_stage, "완료")
+
+    def test_package_contains_approved_html_contract(self):
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "semantic_prompt_transfer"
+            / "examples"
+            / "operational"
+            / "credit_review_upload_demo.html"
         )
-        for status in (
-            FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING, FileStatus.READY
+        content = path.read_text(encoding="utf-8")
+        for label in (
+            "신용조사서",
+            "기타 첨부자료",
+            "업로드 자료현황",
+            "심사의견 다운로드",
+            "임베딩 벡터를 모두 삭제",
+            "/api/v1/cases/",
         ):
-            registry.transition_document("tenant", "case", "doc", status)
-        vector = InMemoryVectorStore()
-        record = ChunkRecord(
-            "CH_TEXT_00001", "text", "text",
-            {"tenant_id": "tenant", "case_id": "case", "document_id": "doc", "global_chunk_id": "GCH-1"},
-        )
-        vector.upsert_document([record], np.ones((1, 8), dtype=np.float32))
-        deleted = DocumentLifecycleService(registry, vector).delete(
-            DocumentScope("tenant", "case", "doc")
-        )
-        self.assertEqual(deleted["deleted_vectors"], 1)
-        self.assertEqual(registry.get_document("tenant", "case", "doc").status, FileStatus.DELETED)
+            self.assertIn(label, content)
 
     def test_five_item_orchestration_generates_docx_and_progress(self):
         class EmptyRetriever:

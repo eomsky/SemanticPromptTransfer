@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>신용심사 자료 업로드 예시</title>
+  <style>
+    :root { --line:#d9dde3; --navy:#244a73; --muted:#68707c; --bg:#f5f6f8; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:56px 20px; background:var(--bg); color:#20242b; font:14px Arial,"Noto Sans KR",sans-serif; }
+    button { min-width:104px; height:36px; border:1px solid var(--line); border-radius:5px; background:#fff; cursor:pointer; }
+    button.primary { border-color:var(--navy); background:var(--navy); color:#fff; }
+    button.danger { min-width:52px; height:29px; border-color:#b42318; background:#b42318; color:#fff; font-size:12px; }
+    button:disabled { cursor:not-allowed; opacity:.45; }
+    .panel { width:min(900px,100%); margin:auto; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 3px 14px #1d2a3a14; }
+    header { padding:22px 26px; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:21px; }
+    header p { margin:6px 0 0; color:var(--muted); font-size:13px; }
+    .rows { padding:10px 26px 26px; }
+    .row { display:grid; grid-template-columns:minmax(190px,1fr) 104px minmax(230px,1.3fr); align-items:center; gap:18px; min-height:84px; border-bottom:1px solid #e8eaed; }
+    .row:last-child { border:0; }
+    .label { display:flex; flex-direction:column; gap:5px; }
+    .label strong { font-size:15px; }
+    .label small { color:var(--muted); }
+    .status { display:grid; grid-template-columns:1fr 44px; align-items:center; gap:12px; }
+    .track { height:8px; overflow:hidden; border-radius:10px; background:#d9e2eb; }
+    .bar { width:0; height:100%; background:var(--navy); transition:width .15s linear; }
+    .status span { color:#4f5965; font-size:13px; text-align:right; }
+    input[type=file] { display:none; }
+    dialog { width:min(850px,calc(100% - 32px)); max-height:85vh; padding:0; overflow:auto; border:1px solid var(--line); border-radius:8px; box-shadow:0 18px 50px #0003; }
+    dialog::backdrop { background:#0008; }
+    .modal-head { padding:20px 22px 12px; }
+    .modal-head h2 { margin:0; font-size:18px; }
+    .modal-head p { margin:7px 0 0; color:var(--muted); }
+    .file-section { margin:12px 22px; overflow:hidden; border:1px solid var(--line); border-radius:6px; }
+    .file-section h3 { margin:0; padding:12px 14px; border-bottom:1px solid var(--line); background:#f4f6f8; font-size:14px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:11px 12px; border-bottom:1px solid #e8eaed; text-align:left; white-space:nowrap; }
+    tbody tr:last-child td { border-bottom:0; }
+    .empty { padding:22px 14px; color:var(--muted); text-align:center; }
+    .badge { display:inline-block; padding:3px 7px; border-radius:4px; background:#eef1f4; color:#4f5965; font-size:12px; }
+    .badge.done { background:#e9f5ee; color:#237249; }
+    .modal-foot { display:flex; justify-content:flex-end; padding:12px 22px 20px; }
+    @media(max-width:700px){ body{padding:20px 12px}.row{grid-template-columns:1fr 104px;gap:12px;padding:18px 0}.status{grid-column:1/-1}.rows{padding:10px 18px 20px}header{padding:20px 18px} }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <header><h1>신용심사 자료 업로드</h1><p>초기 기능 테스트 화면</p></header>
+    <section class="rows">
+      <div class="row">
+        <div class="label"><strong>신용조사서</strong><small>엑셀 파일 1개</small></div>
+        <button type="button" onclick="creditInput.click()">업로드</button>
+        <div class="status"><div class="track"><div class="bar" id="creditBar"></div></div><span id="creditText">0%</span></div>
+        <input id="creditInput" type="file" accept=".xlsx,.xls">
+      </div>
+      <div class="row">
+        <div class="label"><strong>기타 첨부자료</strong><small>복수 파일 선택 가능</small></div>
+        <button type="button" onclick="attachmentInput.click()">업로드</button>
+        <div class="status"><div class="track"><div class="bar" id="attachmentBar"></div></div><span id="attachmentText">0%</span></div>
+        <input id="attachmentInput" type="file" multiple accept=".pdf,.doc,.docx,.xlsx,.xls,.txt">
+      </div>
+      <div class="row">
+        <div class="label"><strong>업로드 자료현황</strong></div>
+        <button type="button" onclick="openFiles()">조회</button><div></div>
+      </div>
+      <div class="row">
+        <div class="label"><strong>심사의견 다운로드</strong><small id="reportHelp">자료 업로드 후 실행</small></div>
+        <button class="primary" id="downloadButton" type="button" disabled>다운로드</button>
+        <div class="status"><div class="track"><div class="bar" id="reportBar"></div></div><span id="reportText">0%</span></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="filesDialog">
+    <div class="modal-head"><h2>업로드 자료현황</h2><p>현재 선택한 파일과 처리 단계를 확인합니다.</p></div>
+    <section class="file-section"><h3>1) 신용조사서</h3><div id="creditTable" class="empty">업로드된 파일이 없습니다.</div></section>
+    <section class="file-section"><h3>2) 기타 첨부자료</h3><div id="attachmentTable" class="empty">업로드된 파일이 없습니다.</div></section>
+    <div class="modal-foot"><button class="primary" type="button" onclick="filesDialog.close()">확인</button></div>
+  </dialog>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const apiMode = params.get('mode') === 'api';
+    const apiBase = (params.get('api_base') || '').replace(/\/$/, '');
+    const tenantId = params.get('tenant_id') || 'example';
+    const caseId = params.get('case_id') || 'case-001';
+    const state = { credit: [], attachments: [], report: 0, jobId: null, downloadUrl: null };
+    const creditInput = document.getElementById('creditInput');
+    const attachmentInput = document.getElementById('attachmentInput');
+    const filesDialog = document.getElementById('filesDialog');
+    const downloadButton = document.getElementById('downloadButton');
+
+    const typeOf = name => (name.split('.').pop() || '파일').toUpperCase();
+    const sizeOf = bytes => bytes < 1048576 ? `${Math.max(1,Math.round(bytes/1024))} KB` : `${(bytes/1048576).toFixed(1)} MB`;
+    const stageOf = value => value < 45 ? '파일적재' : value < 100 ? '벡터임베딩' : '완료';
+    const status = (kind, value) => {
+      document.getElementById(`${kind}Bar`).style.width = `${value}%`;
+      document.getElementById(`${kind}Text`).textContent = value === 100 ? '완료' : `${value}%`;
+    };
+    const table = (files, key) => {
+      if (!files.length) return '<div class="empty">업로드된 파일이 없습니다.</div>';
+      return `<table><thead><tr><th>파일명</th><th>자료유형</th><th>파일크기</th><th>진행단계</th><th>삭제</th></tr></thead><tbody>${files.map(file => `<tr><td>${file.name.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</td><td>${file.type}</td><td>${sizeOf(file.size)}</td><td><span class="badge ${file.progress===100?'done':''}">${file.stage||stageOf(file.progress)}</span></td><td><button class="danger" type="button" onclick="deleteItem('${key}','${file.id}')">삭제</button></td></tr>`).join('')}</tbody></table>`;
+    };
+    const renderTables = () => {
+      document.getElementById('creditTable').outerHTML = `<div id="creditTable">${table(state.credit,'credit')}</div>`;
+      document.getElementById('attachmentTable').outerHTML = `<div id="attachmentTable">${table(state.attachments,'attachments')}</div>`;
+    };
+    const syncMainProgress = () => {
+      status('credit', state.credit[0]?.progress || 0);
+      const attachmentValue=state.attachments.length?Math.round(state.attachments.reduce((sum,file)=>sum+file.progress,0)/state.attachments.length):0;
+      status('attachment',attachmentValue);
+      downloadButton.disabled=state.credit[0]?.progress!==100;
+      renderTables();
+    };
+    const loadUploads = async () => {
+      const response=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/documents?tenant_id=${encodeURIComponent(tenantId)}`);
+      if(!response.ok) throw new Error(`자료현황 조회 실패 (${response.status})`);
+      const payload=await response.json();
+      const convert=row=>({id:row.document_id,name:row.filename,type:row.file_type,size:row.size_bytes||0,progress:row.progress_percent||0,stage:row.progress_stage});
+      state.credit=(payload.credit_report||[]).map(convert);
+      state.attachments=(payload.attachments||[]).map(convert);
+      syncMainProgress();
+    };
+    const openFiles = async () => {
+      if(apiMode){ try{ await loadUploads(); }catch(error){ alert(error.message); return; } }
+      filesDialog.showModal();
+    };
+    const deleteItem = async (key,id) => {
+      if(!confirm('서버에 적재된 파일과 해당 파일의 임베딩 벡터를 모두 삭제합니다.')) return;
+      if(apiMode){
+        const response=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(id)}?tenant_id=${encodeURIComponent(tenantId)}`,{method:'DELETE'});
+        if(!response.ok){ const detail=await response.text(); alert(`삭제 실패: ${detail}`); return; }
+        await loadUploads();
+      } else {
+      state[key]=state[key].filter(file=>file.id!==id);
+      const kind=key==='credit'?'credit':'attachment';
+      const value=state[key].length?Math.round(state[key].reduce((sum,file)=>sum+file.progress,0)/state[key].length):0;
+      status(kind,value); state.report=0; status('report',0); downloadButton.disabled=state.credit[0]?.progress!==100;
+      document.getElementById('reportHelp').textContent='자료 업로드 후 실행';
+      renderTables();
+      }
+    };
+    const run = (files, key, replace) => {
+      const incoming = files.map((file,index)=>({ id:`${Date.now()}-${index}`, name:file.name, type:typeOf(file.name), size:file.size, progress:1 }));
+      state[key] = replace ? incoming : [...state[key], ...incoming];
+      state.report = 0; status('report',0); downloadButton.disabled = true;
+      let value=1;
+      const timer=setInterval(()=>{
+        value=Math.min(100,value+7); incoming.forEach(item=>item.progress=value);
+        const average=Math.round(state[key].reduce((sum,file)=>sum+file.progress,0)/state[key].length);
+        status(key==='credit'?'credit':'attachment',average); renderTables();
+        if(value===100){ clearInterval(timer); if(state.credit[0]?.progress===100) downloadButton.disabled=false; }
+      },140);
+    };
+    const apiUpload = async (endpoint, files) => {
+      for(const file of files){
+        const form=new FormData(); form.append('file',file);
+        const response=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/${endpoint}?tenant_id=${encodeURIComponent(tenantId)}`,{method:'POST',body:form});
+        if(!response.ok) throw new Error(`업로드 실패 (${response.status})`);
+      }
+      await loadUploads();
+      const poll=setInterval(async()=>{ try{ await loadUploads(); const all=[...state.credit,...state.attachments]; if(all.length&&all.every(file=>file.progress===100||file.stage==='실패')) clearInterval(poll); }catch(error){clearInterval(poll);} },800);
+    };
+    creditInput.addEventListener('change',async()=>{ if(creditInput.files.length){ if(apiMode){try{await apiUpload('credit-report',[creditInput.files[0]]);}catch(error){alert(error.message);}}else run([creditInput.files[0]],'credit',true); } creditInput.value=''; });
+    attachmentInput.addEventListener('change',async()=>{ if(attachmentInput.files.length){ if(apiMode){try{await apiUpload('attachments',[...attachmentInput.files]);}catch(error){alert(error.message);}}else run([...attachmentInput.files],'attachments',false); } attachmentInput.value=''; });
+    downloadButton.addEventListener('click',async()=>{
+      if(apiMode){
+        if(state.downloadUrl){ location.href=state.downloadUrl; return; }
+        const started=await fetch(`${apiBase}/api/v1/cases/${encodeURIComponent(caseId)}/review-jobs?tenant_id=${encodeURIComponent(tenantId)}`,{method:'POST'});
+        if(!started.ok){alert(`심사의견 생성 시작 실패 (${started.status})`);return;}
+        const job=await started.json(); state.jobId=job.job_id; downloadButton.disabled=true;
+        const poll=setInterval(async()=>{ const response=await fetch(`${apiBase}/api/v1/review-jobs/${encodeURIComponent(state.jobId)}`); if(!response.ok){clearInterval(poll);alert('심사의견 진행상태 조회 실패');return;} const current=await response.json(); state.report=current.progress; status('report',state.report); if(current.progress===100){clearInterval(poll);state.downloadUrl=`${apiBase}/api/v1/review-jobs/${encodeURIComponent(state.jobId)}/opinion.docx`;downloadButton.disabled=false;document.getElementById('reportHelp').textContent='버튼을 다시 누르면 파일이 내려받아집니다.';} },800);
+        return;
+      }
+      if(state.report===100){
+        const html='<!doctype html><meta charset="utf-8"><h1>심사의견 예시</h1><p>초기 화면 기능 확인용 예시 문서입니다.</p>';
+        const url=URL.createObjectURL(new Blob([html],{type:'application/msword'}));
+        const link=document.createElement('a'); link.href=url; link.download='심사의견_예시.doc'; link.click(); URL.revokeObjectURL(url); return;
+      }
+      downloadButton.disabled=true; let value=1; state.report=value; status('report',value);
+      const timer=setInterval(()=>{ value=Math.min(100,value+5); state.report=value; status('report',value); if(value===100){clearInterval(timer); downloadButton.disabled=false; document.getElementById('reportHelp').textContent='버튼을 다시 누르면 파일이 내려받아집니다.';} },130);
+    });
+    if(apiMode) loadUploads().catch(error=>console.error(error));
+  </script>
+</body>
+</html>

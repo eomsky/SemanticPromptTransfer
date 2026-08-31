@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .domain import CaseContext, ReviewItem, ReviewSectionDraft
+from .version import PACKAGE_VERSION
 
 
 class OpinionDocumentBuilder:
@@ -78,8 +79,8 @@ class OpinionDocumentBuilder:
             body.paragraph_format.line_spacing = 1.25
             body.paragraph_format.space_after = Pt(6)
 
-        document.add_page_break()
-        document.add_heading("근거 추적 정보", level=1)
+        trace_heading = document.add_heading("근거 추적 정보", level=1)
+        trace_heading.paragraph_format.keep_with_next = True
         trace = document.add_table(rows=1, cols=2)
         trace.style = "Table Grid"
         trace.rows[0].cells[0].text = "심사항목"
@@ -91,7 +92,7 @@ class OpinionDocumentBuilder:
 
         footer = section.footer.paragraphs[0]
         footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        footer.add_run("SemanticPromptTransfer v0.20 · 근거 추적형 생성문서")
+        footer.add_run(f"SemanticPromptTransfer v{PACKAGE_VERSION} · 근거 추적형 생성문서")
 
         settings = document.settings.element
         update_fields = OxmlElement("w:updateFields")

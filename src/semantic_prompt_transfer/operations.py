@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import DocumentScope, PipelineConfig
 from .pipeline import RAGPipeline
 from .domain import FileStatus
 from .registry import OperationalRegistry
+from .storage import DocumentArtifactStore
 from .vector_store import VectorStoreBackend
 
 
@@ -61,34 +62,55 @@ class DocumentLifecycleService:
         self,
         registry: OperationalRegistry,
         vector_store: VectorStoreBackend,
-        *,
-        remove_original: Callable[[DocumentScope], None] | None = None,
-        remove_derived: Callable[[DocumentScope], None] | None = None,
+        artifact_store: DocumentArtifactStore,
     ) -> None:
         self.registry = registry
         self.vector_store = vector_store
-        self.remove_original = remove_original
-        self.remove_derived = remove_derived
+        self.artifact_store = artifact_store
 
     def delete(self, scope: DocumentScope) -> dict[str, Any]:
         current = self.registry.get_document(scope.tenant_id, scope.case_id, scope.document_id)
         if current.status is FileStatus.DELETED:
             return {"status": "DELETED", "deleted_vectors": 0, "idempotent": True}
         self.registry.transition_document(
-            scope.tenant_id, scope.case_id, scope.document_id, FileStatus.DELETING
+            scope.tenant_id,
+            scope.case_id,
+            scope.document_id,
+            FileStatus.DELETING,
+            progress=current.progress,
+            message="원본 파일과 임베딩 벡터를 삭제하고 있습니다.",
         )
         try:
             deleted_vectors = self.vector_store.delete_document(scope)
-            if self.remove_derived:
-                self.remove_derived(scope)
-            if self.remove_original:
-                self.remove_original(scope)
+            remaining_vectors = self.vector_store.count(
+                {
+                    "tenant_id": scope.tenant_id,
+                    "case_id": scope.case_id,
+                    "document_id": scope.document_id,
+                }
+            )
+            if remaining_vectors:
+                raise RuntimeError(
+                    f"vector deletion verification failed: {remaining_vectors} points remain"
+                )
+            artifacts = self.artifact_store.delete(current)
+            if not artifacts.original_absent:
+                raise RuntimeError("uploaded file deletion verification failed")
             final = self.registry.transition_document(
-                scope.tenant_id, scope.case_id, scope.document_id, FileStatus.DELETED
+                scope.tenant_id,
+                scope.case_id,
+                scope.document_id,
+                FileStatus.DELETED,
+                progress=100,
+                message="원본 파일과 임베딩 벡터를 삭제했습니다.",
             )
             return {
                 "status": final.status.value,
                 "deleted_vectors": deleted_vectors,
+                "remaining_vectors": remaining_vectors,
+                "original_deleted": artifacts.original_deleted,
+                "original_absent": artifacts.original_absent,
+                "derived_deleted": artifacts.derived_deleted,
                 "idempotent": False,
             }
         except Exception as exc:

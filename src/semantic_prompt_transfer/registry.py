@@ -33,6 +33,10 @@ class DocumentRecord:
     status: FileStatus
     source_hash: str | None
     size_bytes: int | None
+    progress: int
+    processing_message: str
+    storage_uri: str | None
+    derived_uri: str | None
     created_at: float
     updated_at: float
     error: str | None = None
@@ -41,6 +45,8 @@ class DocumentRecord:
         value = self.__dict__.copy()
         value["document_kind"] = self.document_kind.value
         value["status"] = self.status.value
+        value["progress_percent"] = self.progress
+        value["progress_stage"] = self.status.progress_stage
         return value
 
 
@@ -83,6 +89,10 @@ class OperationalRegistry:
                 status TEXT NOT NULL,
                 source_hash TEXT,
                 size_bytes INTEGER,
+                progress INTEGER NOT NULL DEFAULT 0,
+                processing_message TEXT NOT NULL DEFAULT '',
+                storage_uri TEXT,
+                derived_uri TEXT,
                 error TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
@@ -110,7 +120,45 @@ class OperationalRegistry:
             );
             """
         )
+        self._migrate_document_columns()
         self.connection.commit()
+
+    def _migrate_document_columns(self) -> None:
+        """Add v0.21 columns without replacing an existing operational registry."""
+        existing = {
+            str(row["name"])
+            for row in self.connection.execute("PRAGMA table_info(documents)")
+        }
+        additions = {
+            "progress": "INTEGER NOT NULL DEFAULT 0",
+            "processing_message": "TEXT NOT NULL DEFAULT ''",
+            "storage_uri": "TEXT",
+            "derived_uri": "TEXT",
+        }
+        for name, declaration in additions.items():
+            if name not in existing:
+                self.connection.execute(
+                    f"ALTER TABLE documents ADD COLUMN {name} {declaration}"
+                )
+        self.connection.execute(
+            """UPDATE documents
+               SET progress=CASE status
+                 WHEN 'UPLOADED' THEN 15 WHEN 'VALIDATING' THEN 25
+                 WHEN 'PARSING' THEN 45 WHEN 'INDEXING' THEN 70
+                 WHEN 'READY' THEN 100 WHEN 'DELETING' THEN 100
+                 WHEN 'DELETED' THEN 100 ELSE progress END
+               WHERE progress=0 AND status<>'FAILED'"""
+        )
+        self.connection.execute(
+            """UPDATE documents
+               SET processing_message=CASE status
+                 WHEN 'UPLOADED' THEN '파일적재' WHEN 'VALIDATING' THEN '파일검증'
+                 WHEN 'PARSING' THEN '파일해석' WHEN 'INDEXING' THEN '벡터임베딩'
+                 WHEN 'READY' THEN '완료' WHEN 'FAILED' THEN '실패'
+                 WHEN 'DELETING' THEN '삭제중' WHEN 'DELETED' THEN '삭제완료'
+                 ELSE '' END
+               WHERE processing_message=''"""
+        )
 
     def _audit(self, tenant_id: str, case_id: str, entity_id: str, event_type: str, payload: dict[str, Any]) -> None:
         self.connection.execute(
@@ -128,23 +176,35 @@ class OperationalRegistry:
         document_kind: DocumentKind,
         source_hash: str | None = None,
         size_bytes: int | None = None,
+        storage_uri: str | None = None,
+        derived_uri: str | None = None,
     ) -> DocumentRecord:
         now = time.time()
         self.connection.execute(
             """
-            INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            INSERT INTO documents (
+                tenant_id, case_id, document_id, filename, document_kind, status,
+                source_hash, size_bytes, progress, processing_message,
+                storage_uri, derived_uri, error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             ON CONFLICT(tenant_id, case_id, document_id) DO UPDATE SET
                 filename=excluded.filename,
                 document_kind=excluded.document_kind,
                 status=excluded.status,
                 source_hash=excluded.source_hash,
                 size_bytes=excluded.size_bytes,
+                progress=excluded.progress,
+                processing_message=excluded.processing_message,
+                storage_uri=excluded.storage_uri,
+                derived_uri=excluded.derived_uri,
                 error=NULL,
                 updated_at=excluded.updated_at
             """,
             (
                 tenant_id, case_id, document_id, filename, document_kind.value,
-                FileStatus.UPLOADED.value, source_hash, size_bytes, now, now,
+                FileStatus.UPLOADED.value, source_hash, size_bytes,
+                FileStatus.UPLOADED.default_progress, "파일을 적재했습니다.",
+                storage_uri, derived_uri, now, now,
             ),
         )
         self._audit(tenant_id, case_id, document_id, "DOCUMENT_REGISTERED", {"filename": filename})
@@ -176,16 +236,44 @@ class OperationalRegistry:
         document_id: str,
         status: FileStatus,
         error: str | None = None,
+        progress: int | None = None,
+        message: str | None = None,
     ) -> DocumentRecord:
         current = self.get_document(tenant_id, case_id, document_id)
         if status not in ALLOWED_FILE_TRANSITIONS[current.status]:
             raise ValueError(f"invalid file transition: {current.status.value} -> {status.value}")
+        next_progress = status.default_progress if progress is None else int(progress)
+        if not 0 <= next_progress <= 100:
+            raise ValueError("document progress must be between 0 and 100")
+        if (
+            next_progress < current.progress
+            and status not in {FileStatus.FAILED, FileStatus.DELETING, FileStatus.DELETED}
+        ):
+            raise ValueError("document progress cannot decrease")
+        next_message = message if message is not None else status.progress_stage
         now = time.time()
         self.connection.execute(
-            "UPDATE documents SET status=?, error=?, updated_at=? WHERE tenant_id=? AND case_id=? AND document_id=?",
-            (status.value, error, now, tenant_id, case_id, document_id),
+            """UPDATE documents
+               SET status=?, progress=?, processing_message=?, error=?, updated_at=?
+               WHERE tenant_id=? AND case_id=? AND document_id=?""",
+            (
+                status.value, next_progress, next_message, error, now,
+                tenant_id, case_id, document_id,
+            ),
         )
-        self._audit(tenant_id, case_id, document_id, "DOCUMENT_STATUS", {"from": current.status.value, "to": status.value, "error": error})
+        self._audit(
+            tenant_id,
+            case_id,
+            document_id,
+            "DOCUMENT_STATUS",
+            {
+                "from": current.status.value,
+                "to": status.value,
+                "progress": next_progress,
+                "message": next_message,
+                "error": error,
+            },
+        )
         self.connection.commit()
         return self.get_document(tenant_id, case_id, document_id)
 
@@ -237,5 +325,7 @@ class OperationalRegistry:
             tenant_id=row["tenant_id"], case_id=row["case_id"], document_id=row["document_id"],
             filename=row["filename"], document_kind=DocumentKind(row["document_kind"]),
             status=FileStatus(row["status"]), source_hash=row["source_hash"], size_bytes=row["size_bytes"],
+            progress=int(row["progress"]), processing_message=str(row["processing_message"] or ""),
+            storage_uri=row["storage_uri"], derived_uri=row["derived_uri"],
             error=row["error"], created_at=float(row["created_at"]), updated_at=float(row["updated_at"]),
         )

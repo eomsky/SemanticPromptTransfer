@@ -1,6 +1,6 @@
-# semantic-prompt-transfer 0.20.0
+# semantic-prompt-transfer 0.21.0
 
-SemanticPromptTransfer v0.20 extends the v0.19 L0 RAG baseline with an operational credit-review layer. It keeps provider-neutral retrieval while enforcing source priority, case isolation, document deletion, item-specific query profiles, and style-only few-shot selection by loan type and industry.
+SemanticPromptTransfer v0.21 aligns the operational package with the approved minimal HTML interface. It adds file-level progress responses, verified file-and-vector deletion, optional HTTP routes, and a replaceable CPU text-generation module while preserving the v0.20 evidence contract and L0 RAG baseline.
 
 ## Evidence contract
 
@@ -77,7 +77,35 @@ builder.build("attachment_b_MASTER.json", DocumentScope("bank-a", "review-001", 
 builder.delete(DocumentScope("bank-a", "review-001", "attachment-a"))
 ```
 
-`global_chunk_id` is derived from tenant, case, document, local chunk, and representation level. Deletion is document-scoped. `DocumentLifecycleService` coordinates registry state, vector deletion, derived assets, and original-file removal.
+`global_chunk_id` is derived from tenant, case, document, local chunk, and representation level. Deletion is document-scoped. `DocumentLifecycleService` first blocks the document with `DELETING`, deletes its scoped vectors, verifies that no vector remains, deletes the original and derived artifacts through `DocumentArtifactStore`, and only then records `DELETED`.
+
+## Approved HTML interface contract
+
+The bundled `examples/operational/credit_review_upload_demo.html` is the minimal interface reference. `OperationalApplicationService` returns the exact file-list fields needed by the popup:
+
+- filename and file type
+- size in bytes
+- progress percentage
+- progress stage (`파일적재`, `파일검증`, `파일해석`, `벡터임베딩`, `완료`)
+- document-scoped delete availability
+
+The optional FastAPI adapter exposes:
+
+```text
+POST   /api/v1/cases/{case_id}/credit-report
+POST   /api/v1/cases/{case_id}/attachments
+GET    /api/v1/cases/{case_id}/documents
+DELETE /api/v1/cases/{case_id}/documents/{document_id}
+POST   /api/v1/cases/{case_id}/review-jobs
+GET    /api/v1/review-jobs/{job_id}
+GET    /api/v1/review-jobs/{job_id}/opinion.docx
+```
+
+Install the HTTP adapter only when needed:
+
+```bash
+pip install "semantic-prompt-transfer[web]"
+```
 
 ## Five-item generation
 
@@ -88,7 +116,29 @@ PRECHECK -> CREDIT_REPORT_LOAD -> ATTACHMENT_RETRIEVAL
 -> ITEM A-E GENERATION -> VALIDATION -> DOCX_RENDER -> COMPLETE
 ```
 
-It accepts a provider-neutral `LLMClient`, emits progress events, validates every item, and creates a Word document with evidence trace information. The package does not ship or call a specific LLM.
+It accepts the provider-neutral `TextGenerator`, emits progress events, validates every item, and creates a Word document with evidence trace information.
+
+## Replaceable CPU text generation
+
+The initial CPU implementation uses `Qwen/Qwen2.5-0.5B-Instruct` through a lazy Transformers adapter. The model is not bundled in the wheel. It is loaded once, kept on CPU, and constrained to short deterministic generation. If the model is unavailable or its draft fails the citation/numeric grounding precheck, `EvidenceTemplateGenerator` immediately produces a conservative evidence-only draft.
+
+```bash
+pip install "semantic-prompt-transfer[llm-cpu]"
+```
+
+```python
+from semantic_prompt_transfer import CpuGenerationConfig, default_cpu_generator
+
+generator = default_cpu_generator(
+    CpuGenerationConfig(
+        model_id="Qwen/Qwen2.5-0.5B-Instruct",
+        max_new_tokens=256,
+        num_threads=4,
+    )
+)
+```
+
+Later replacement requires only another object implementing `generate(messages) -> str`; retrieval, validation, progress, and DOCX code do not change.
 
 ## Storage backends
 
@@ -121,6 +171,6 @@ spt-rag fewshot-select --registry few_shots.json --review-item B \
 
 ## Operational boundary
 
-The package exposes the domain and execution contracts. Authentication, HTML upload endpoints, object storage, malware scanning, distributed task queues, LLM hosting, and bank-specific Excel/Word templates remain deployment integrations.
+The package now includes the HTML-facing application contract, an optional FastAPI adapter, safe local artifact storage, and replaceable generation adapters. Authentication, enterprise object storage, malware scanning, distributed task queues, production LLM hosting, and bank-specific Excel/Word templates remain deployment integrations.
 
 The bundled operational example contains no real customer data.

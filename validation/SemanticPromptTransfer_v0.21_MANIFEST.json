@@ -1,0 +1,72 @@
+{
+  "package": "semantic-prompt-transfer",
+  "version": "0.21.0",
+  "generated_at_utc": "2026-08-31T03:06:48.992382+00:00",
+  "files": [
+    {
+      "path": "dist/semantic_prompt_transfer-0.21.0-py3-none-any.whl",
+      "size_bytes": 73283,
+      "sha256": "ffca7f03f4c77047bd9e69b4d6e8dd6072bb74e6b4a44745c47a08c156a15e8c"
+    },
+    {
+      "path": "dist/semantic_prompt_transfer-0.21.0.tar.gz",
+      "size_bytes": 86823,
+      "sha256": "5556b2175dfb0f0b27a47198e74a429021ccd7bf444d2ca321a8aa1f834d0d92"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_SOURCE_BUNDLE.zip",
+      "size_bytes": 111030,
+      "sha256": "382c000ee8d02b4d246a53db86eb7ce28dc141954ffa233a1de94077460f7f5b"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_REQUIREMENTS.md",
+      "size_bytes": 6359,
+      "sha256": "edd2df626fdb63388d91c34b3348fe2d81c9e288109c789c7700c5430117d1e3"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_REQUIREMENTS.docx",
+      "size_bytes": 17517,
+      "sha256": "a7e63a48150b635057b273fa5858a0e83a3f938d33412ffe959bbdcd16702dcd"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_REQUIREMENTS.pdf",
+      "size_bytes": 226899,
+      "sha256": "8a11064a07cbda896e004e5740e46a04bee8ce46002178bcd5bc655b9e2a2e07"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_VALIDATION.md",
+      "size_bytes": 3054,
+      "sha256": "f6b14125d0a63a7a35696f64403af566f54ffdfb7f20a18466019377210dca0b"
+    },
+    {
+      "path": "SemanticPromptTransfer_RELEASE_MANAGEMENT.md",
+      "size_bytes": 3165,
+      "sha256": "c2e2bf298a3dc4dc4812e6c4cb51fd1f727b42472bbf29a734799bda9ca20725"
+    },
+    {
+      "path": "credit_review_upload_demo_v0.21.html",
+      "size_bytes": 14044,
+      "sha256": "3d85f4606d159f514cb527045e7c3d761399b52ef9c8e8112b6f886feed93418"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_OPERATIONAL_SMOKE.json",
+      "size_bytes": 5157,
+      "sha256": "992a6c3dc1b37173d5bfd72c00d4f91dbf7841d4e3f2a6c28ce777587c9f92db"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_L0_REGRESSION.json",
+      "size_bytes": 499,
+      "sha256": "d2df74c24c5c0a231cb67896357d403df8f59795de86e74151af6366bc604535"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_RELEASE_CHECK.json",
+      "size_bytes": 316,
+      "sha256": "d9517507ec4b7d65362cac3502e487da2c20331dc29b39576ee625180faa3737"
+    },
+    {
+      "path": "SemanticPromptTransfer_v0.21_SMOKE_OPINION.docx",
+      "size_bytes": 38699,
+      "sha256": "c16fc34b81c1ea461f7aea17c46af7d4e7a3ccd651593c8f0ca0e508b5f2e87c"
+    }
+  ]
+}
