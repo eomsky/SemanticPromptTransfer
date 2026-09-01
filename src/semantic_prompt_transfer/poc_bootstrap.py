@@ -63,6 +63,7 @@ def build_colab_poc(
     generator: TextGenerator | None = None,
     require_content_root: bool = True,
     anonymous_access: bool = False,
+    verification_mode: str = "OFF",
 ) -> ColabPocBundle:
     runtime = EphemeralColabRuntime(
         EphemeralColabConfig(
@@ -81,20 +82,20 @@ def build_colab_poc(
         few_shots = FewShotSelector(
             FewShotRegistry.from_json(few_shot_path or _example_path("few_shots.json"))
         )
+        primary_generator: TextGenerator | None = None
         if generator is not None:
-            # Every configured primary, including the local native-vLLM adapter, is
-            # wrapped so transport/model faults and grounding precheck failures converge
-            # to deterministic current-case evidence instead of a terminal job failure.
+            # Generation keeps technical fallback, while verification talks to the actual primary LLM.
+            primary_generator = generator
             text_generator: TextGenerator = FallbackGenerator(generator, EvidenceTemplateGenerator())
         elif llm_base_url:
-            primary = OpenAICompatibleHttpGenerator(
+            primary_generator = OpenAICompatibleHttpGenerator(
                 RemoteGenerationConfig(
                     base_url=llm_base_url,
                     model=llm_model,
                     api_key=llm_api_key,
                 )
             )
-            text_generator = FallbackGenerator(primary, EvidenceTemplateGenerator())
+            text_generator = FallbackGenerator(primary_generator, EvidenceTemplateGenerator())
         else:
             text_generator = EvidenceTemplateGenerator()
         upload_processor = PocUploadProcessor(
@@ -110,6 +111,8 @@ def build_colab_poc(
             few_shots,
             text_generator,
             upload_processor,
+            verification_mode=verification_mode,
+            verification_generator=primary_generator,
         )
         sessions = None if anonymous_access else PocIdentityService(
             runtime.root / "metadata" / "identity.sqlite",
@@ -168,6 +171,7 @@ def build_colab_poc_from_env() -> ColabPocBundle:
         demo_credit_report_path=os.environ.get("SPT_DEMO_CREDIT_REPORT"),
         demo_attachment_paths=demo_attachments,
         allowed_origins=origins,
+        verification_mode=os.environ.get("SPT_VERIFICATION_MODE", "ENFORCE"),
         session_ttl_seconds=int(os.environ.get("SPT_SESSION_TTL_SECONDS", str(4 * 60 * 60))),
         runtime_lifetime_seconds=int(
             os.environ.get("SPT_RUNTIME_LIFETIME_SECONDS", str(12 * 60 * 60))

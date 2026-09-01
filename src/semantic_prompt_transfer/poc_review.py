@@ -18,6 +18,7 @@ from .llm import TextGenerator
 from .orchestration import ReviewGenerationOrchestrator, ReviewGenerationResult
 from .poc_processing import PocUploadProcessor, ShardedAttachmentRetriever
 from .review_docx import OpinionDocumentBuilder
+from .verification_flow import LLMVerificationAgent, VerificationMode
 
 
 class PocCreditFactRepository:
@@ -58,6 +59,8 @@ class EphemeralReviewJobService:
         loan_type: str = "운전자금",
         industry_code: str = "*",
         company_name: str | None = None,
+        verification_mode: VerificationMode | str = VerificationMode.OFF,
+        verification_generator: TextGenerator | None = None,
     ) -> None:
         self.runtime = runtime
         self.facts = PocCreditFactRepository(runtime)
@@ -69,13 +72,16 @@ class EphemeralReviewJobService:
         self.capture_service = EvidenceCaptureService(runtime)
         self.retriever = retriever
         self.chat_router = ChatIntentRouter()
+        mode = VerificationMode(str(getattr(verification_mode, "value", verification_mode)).upper())
+        verifier = LLMVerificationAgent(verification_generator or generator) if mode is not VerificationMode.OFF else None
         self.orchestrator = ReviewGenerationOrchestrator(
             retriever,
             few_shots,
             registry=runtime.registry,
             llm=generator,
             document_builder=OpinionDocumentBuilder(capture_service=self.capture_service),
-            verification_mode="OFF",
+            verification_mode=mode,
+            verifier=verifier,
         )
         self._condition = threading.Condition(threading.RLock())
         self._events: dict[str, list[dict[str, Any]]] = {}

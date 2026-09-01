@@ -57,8 +57,8 @@ class ReviewGenerationResult:
 class ReviewGenerationOrchestrator:
     """Streaming generation core with optional non-destructive verification.
 
-    v0.26.6 defaults to OFF. SHADOW observes completed claims without changing the
-    generated opinion. ENFORCE can only patch the failing claim/span; whole-section
+    The reusable core defaults to OFF. The v0.26.7 Colab POC activates an LLM verifier
+    in ENFORCE mode. ENFORCE can only patch the failing claim/span; whole-section
     and A-E rewrites are structurally absent from this orchestrator.
     """
 

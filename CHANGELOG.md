@@ -1,3 +1,10 @@
+## 0.26.7 - 2026-09-01
+
+- Activated a real claim-level LLM verification agent in the Colab review lane; the verifier shares the loaded Gemma 4 engine without loading a second model.
+- Restricted FAIL to explicit evidence-bound factual errors. Ambiguity and insufficient evidence never mutate review prose.
+- Kept free chat completely outside the verification lane.
+- Preserved minimal-span/claim repair and PatchGuard; full section or A-E rewrites remain structurally prohibited.
+
 # Changelog
 
 ## 0.26.6 - 2026-09-01

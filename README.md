@@ -62,7 +62,7 @@ that a production Vector DB adapter must preserve.
 ## Colab start
 
 The operating notebook is
-`notebooks/SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb`. It provides three
+`notebooks/SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb`. It provides three
 pre-populated editable few-shot cells, mounts the owner's Drive, verifies the
 approved wheel, starts `google/gemma-4-26B-A4B-it` with vLLM on one A100 80 GB,
 loads a batched GPU E5 encoder, serves the packaged HTML and API on one port,
