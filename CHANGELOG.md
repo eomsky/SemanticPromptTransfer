@@ -1,3 +1,10 @@
+## 0.26.8 - 2026-09-01
+
+- Removed FallbackGenerator and its hidden grounding precheck from the operational review-generation lane.
+- Gemma 4 now streams directly to the UI; technical failures are handled by the orchestrator retry path rather than by raw-evidence prose.
+- Kept the active claim-level LLM verifier and minimal PatchGuard repair from v0.26.7.
+- EvidenceTemplateGenerator is no longer reachable as an operating Colab review fallback when a primary LLM is configured.
+
 ## 0.26.7 - 2026-09-01
 
 - Activated a real claim-level LLM verification agent in the Colab review lane; the verifier shares the loaded Gemma 4 engine without loading a second model.

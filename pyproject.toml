@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-prompt-transfer"
-version = "0.26.7"
+version = "0.26.8"
 description = "Time-boxed Colab POC runtime for operational credit-review RAG"
 readme = "README.md"
 requires-python = ">=3.11"

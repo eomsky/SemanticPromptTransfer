@@ -11,7 +11,6 @@ from .encoding import E5OnnxEncoder, EncoderBackend
 from .fewshot import FewShotRegistry, FewShotSelector
 from .llm import (
     EvidenceTemplateGenerator,
-    FallbackGenerator,
     OpenAICompatibleHttpGenerator,
     RemoteGenerationConfig,
     TextGenerator,
@@ -84,9 +83,10 @@ def build_colab_poc(
         )
         primary_generator: TextGenerator | None = None
         if generator is not None:
-            # Generation keeps technical fallback, while verification talks to the actual primary LLM.
+            # Review generation streams directly from the primary LLM. Semantic/factual checking
+            # belongs exclusively to the post-generation VerificationAgent.
             primary_generator = generator
-            text_generator: TextGenerator = FallbackGenerator(generator, EvidenceTemplateGenerator())
+            text_generator: TextGenerator = generator
         elif llm_base_url:
             primary_generator = OpenAICompatibleHttpGenerator(
                 RemoteGenerationConfig(
@@ -95,8 +95,9 @@ def build_colab_poc(
                     api_key=llm_api_key,
                 )
             )
-            text_generator = FallbackGenerator(primary_generator, EvidenceTemplateGenerator())
+            text_generator = primary_generator
         else:
+            # Offline/no-LLM compatibility only. The operating Colab always supplies a primary LLM.
             text_generator = EvidenceTemplateGenerator()
         upload_processor = PocUploadProcessor(
             embedding_encoder,

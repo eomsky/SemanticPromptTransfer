@@ -119,7 +119,7 @@ def minimal_master():
 
 class PackageTests(unittest.TestCase):
     def test_runtime_version_is_v0266(self):
-        self.assertEqual(__version__, "0.26.7")
+        self.assertEqual(__version__, "0.26.8")
 
     def test_default_is_l0_memory(self):
         config = PipelineConfig(model_dir="unused")
