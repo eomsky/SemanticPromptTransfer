@@ -1,0 +1,45 @@
+name: Refresh canonical FEW_SHOT_1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/refresh_fewshot1.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refresh FEW_SHOT_1 and validate launcher
+        run: |
+          set -euo pipefail
+          python .github/apply_fewshot1_refresh.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('notebooks/few_shot_defaults_v1.json').read_text(encoding='utf-8'))
+          assert set(d['few_shots']) >= {'FEW_SHOT_1','FEW_SHOT_2','FEW_SHOT_3'}
+          assert all(d['few_shots']['FEW_SHOT_1']['answers'].get(k) for k in 'ABCDE')
+          nb=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.5_COLAB_LAUNCHER.ipynb').read_text(encoding='utf-8'))
+          text='\n'.join(''.join(c.get('source',[])) for c in nb['cells'])
+          assert 'ASSET_MANIFEST_CANDIDATES' in text
+          assert '영업활동을 통한 현금창출능력 양호함' in text
+          PY
+      - name: Commit canonical refresh
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/refresh_fewshot1.trigger .github/apply_fewshot1_refresh.py .github/workflows/refresh_fewshot1.yml
+          git add -A
+          git commit -m 'Refresh canonical FEW_SHOT_1 and harden manifest lookup'
+          git push origin main
