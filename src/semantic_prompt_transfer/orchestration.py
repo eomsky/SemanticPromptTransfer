@@ -26,6 +26,8 @@ from .verification_flow import (
 
 LLMClient = TextGenerator
 _CITATION = re.compile(r"(?:CR|ATT)_[a-f0-9]{20}", re.IGNORECASE)
+_COMPLETE_SUFFIXES = ("함", "임", "됨", "음", "필요함", "양호함", "판단됨", "예상됨", "전망됨", "확인됨")
+_INCOMPLETE_SUFFIXES = ("등에", "으로", "하며", "하고", "및", "따라", "대해", "대한", "에서", "위해", "통해", "반면", "이나", "지만", "경우", "때문에")
 
 
 class AttachmentRetriever(Protocol):
@@ -57,7 +59,7 @@ class ReviewGenerationResult:
 class ReviewGenerationOrchestrator:
     """Streaming generation core with optional non-destructive verification.
 
-    The reusable core defaults to OFF. The v0.26.7 Colab POC activates an LLM verifier
+    The reusable core defaults to OFF. The operating Colab activates a conservative LLM verifier
     in ENFORCE mode. ENFORCE can only patch the failing claim/span; whole-section
     and A-E rewrites are structurally absent from this orchestrator.
     """
@@ -77,6 +79,8 @@ class ReviewGenerationOrchestrator:
         max_repair_attempts: int = 2,
         verification_mode: VerificationMode | str = VerificationMode.OFF,
         verifier: VerificationAgent | None = None,
+        max_auto_patches_per_section: int = 1,
+        max_completion_attempts: int = 2,
     ) -> None:
         self.attachment_retriever = attachment_retriever
         self.few_shot_selector = few_shot_selector
@@ -92,6 +96,8 @@ class ReviewGenerationOrchestrator:
         self.verifier = verifier or NoOpVerificationAgent()
         self.segmenter = ClaimSegmenter()
         self.repair = RepairCoordinator(max_repair_attempts)
+        self.max_auto_patches_per_section = max(0, int(max_auto_patches_per_section))
+        self.max_completion_attempts = max(0, int(max_completion_attempts))
 
     def _audit(self, case: CaseContext, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if not self.registry:
@@ -129,6 +135,86 @@ class ReviewGenerationOrchestrator:
             token_callback(text)
         return text
 
+    @classmethod
+    def _looks_complete(cls, text: str) -> bool:
+        visible = _CITATION.sub("", str(text or "")).strip()
+        visible = re.sub(r"\s+", " ", visible).rstrip()
+        if not visible:
+            return False
+        if visible.endswith((".", "!", "?", "。")):
+            return True
+        if any(visible.endswith(suffix) for suffix in _COMPLETE_SUFFIXES):
+            return True
+        if visible.endswith((",", ";", ":", "·", "-")):
+            return False
+        if any(visible.endswith(suffix) for suffix in _INCOMPLETE_SUFFIXES):
+            return False
+        return False
+
+    @staticmethod
+    def _novel_continuation(base: str, continuation: str) -> str:
+        value = str(continuation or "").strip()
+        if not value:
+            return ""
+        if value.startswith(base):
+            return value[len(base):].lstrip()
+        maximum = min(240, len(base), len(value))
+        for size in range(maximum, 12, -1):
+            if base[-size:] == value[:size]:
+                return value[size:].lstrip()
+        return value
+
+    def _ensure_complete(
+        self,
+        *,
+        case: CaseContext,
+        job_id: str,
+        item: ReviewItem,
+        prompt: ReviewPromptPackage,
+        generator: TextGenerator,
+        text: str,
+        token_callback: Callable[[ReviewItem, str], None] | None,
+    ) -> str:
+        current = str(text or "").strip()
+        if self._looks_complete(current):
+            return current
+        for attempt in range(1, self.max_completion_attempts + 1):
+            messages = [
+                *[dict(row) for row in prompt.messages],
+                {"role": "assistant", "content": current},
+                {
+                    "role": "user",
+                    "content": (
+                        "직전 심사의견의 마지막 문장이 중간에서 끊겼다. 이미 작성한 내용을 반복하거나 "
+                        "새 분석 포인트를 추가하지 말고, 끊긴 마지막 문장만 자연스럽게 이어서 완결하라. "
+                        "출력은 이어질 문자열만 작성한다."
+                    ),
+                },
+            ]
+            try:
+                continuation = str(generator.generate(messages) or "").strip()
+            except Exception as exc:
+                self._audit(case, job_id, "GENERATION_COMPLETION_ERROR", {
+                    "item": item.value,
+                    "attempt": attempt,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:500],
+                })
+                break
+            addition = self._novel_continuation(current, continuation)
+            if not addition:
+                break
+            current = current.rstrip() + ("" if current.endswith((" ", "\n")) else " ") + addition.lstrip()
+            if token_callback:
+                token_callback(item, addition)
+            self._audit(case, job_id, "GENERATION_COMPLETION_CONTINUED", {
+                "item": item.value,
+                "attempt": attempt,
+            })
+            if self._looks_complete(current):
+                break
+        return current.strip()
+
     @staticmethod
     def _cited_ids(text: str, evidence: Sequence[EvidenceRecord]) -> tuple[str, ...]:
         allowed = {row.evidence_id for row in evidence}
@@ -151,6 +237,15 @@ class ReviewGenerationOrchestrator:
                 (lambda token: token_callback(item, token)) if token_callback else None,
             )
             if text:
+                text = self._ensure_complete(
+                    case=case,
+                    job_id=job_id,
+                    item=item,
+                    prompt=prompt,
+                    generator=generator,
+                    text=text,
+                    token_callback=token_callback,
+                )
                 return text, False
             raise RuntimeError("empty generation")
         except Exception as first:
@@ -165,6 +260,15 @@ class ReviewGenerationOrchestrator:
                 # the retry; section_complete atomically replaces it when the retry succeeds.
                 text = self._generate_once(generator, prompt.messages)
                 if text:
+                    text = self._ensure_complete(
+                        case=case,
+                        job_id=job_id,
+                        item=item,
+                        prompt=prompt,
+                        generator=generator,
+                        text=text,
+                        token_callback=None,
+                    )
                     return text, True
                 raise RuntimeError("empty retry generation")
             except Exception as second:
@@ -215,17 +319,19 @@ class ReviewGenerationOrchestrator:
 
         repaired_any = False
         current = text
-        # Reverse order preserves the original offsets. The current slice is the only
-        # mutable scope, so another claim can never be rewritten by this repair.
-        for claim, finding in sorted(findings, key=lambda pair: pair[0].start, reverse=True):
+        patch_count = 0
+        for claim, finding in sorted(findings, key=lambda pair: pair[0].start):
             if finding.status is not VerificationStatus.FAIL:
                 continue
+            if patch_count >= self.max_auto_patches_per_section:
+                break
             claim_evidence = [by_id[eid] for eid in claim.evidence_ids if eid in by_id] or list(evidence)
             repaired = self.repair.repair(generator, claim, finding, claim_evidence)
             if not repaired or repaired == claim.text:
                 continue
             current = current[: claim.start] + repaired + current[claim.end :]
             repaired_any = True
+            patch_count += 1
             if patch_callback:
                 patch_callback(
                     item,

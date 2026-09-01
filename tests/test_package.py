@@ -41,7 +41,6 @@ from semantic_prompt_transfer import (
     ReviewSectionDraft,
     SourceTier,
     EvidenceTemplateGenerator,
-    FallbackGenerator,
     TransformersCpuGenerator,
 )
 from semantic_prompt_transfer._chunk_builder_base import ChunkRecord
@@ -119,7 +118,7 @@ def minimal_master():
 
 class PackageTests(unittest.TestCase):
     def test_runtime_version_is_v0266(self):
-        self.assertEqual(__version__, "0.26.8")
+        self.assertEqual(__version__, "0.26.9")
 
     def test_default_is_l0_memory(self):
         config = PipelineConfig(model_dir="unused")
@@ -492,27 +491,8 @@ class OperationalPackageTests(unittest.TestCase):
                 FileStatus.FAILED,
             )
 
-    def test_cpu_generator_adapter_and_grounded_fallback(self):
-        class Broken:
-            def generate(self, messages):
-                raise RuntimeError("model unavailable")
-
-        messages = [
-            {"role": "system", "content": "grounded"},
-            {
-                "role": "user",
-                "content": (
-                    "[CURRENT_CASE_EVIDENCE]\n[TIER_1 EVIDENCE]\n"
-                    "evidence_id=EV-1\ndocument_id=credit\nsource_filename=credit.xlsx\n"
-                    "page=None\ncontent=매출액=100 백만원\n\n[작성요청]\n작성"
-                ),
-            },
-        ]
-        fallback = FallbackGenerator(Broken(), EvidenceTemplateGenerator())
-        text = fallback.generate(messages)
-        self.assertIn("EV-1", text)
-        self.assertIn("100", text)
-        self.assertEqual(fallback.last_backend, "EvidenceTemplateGenerator")
+    def test_cpu_generator_adapter(self):
+        messages = [{"role": "user", "content": "작성"}]
 
         class FakeTokenizer:
             eos_token_id = 0

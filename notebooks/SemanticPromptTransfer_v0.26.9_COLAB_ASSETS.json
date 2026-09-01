@@ -1,0 +1,30 @@
+{
+  "schema_version": 3,
+  "release": "v0.26.9",
+  "package_version": "0.26.9",
+  "drive_root": "/content/drive/MyDrive/SemanticPromptTransfer",
+  "runtime_root": "/content/spt_poc_runtime",
+  "stage_root": "/content/spt_bootstrap_v0269",
+  "base_asset_manifest": "runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json",
+  "assets": [
+    {
+      "role": "wheel",
+      "source": "versions/v0.26.9/semantic_prompt_transfer-0.26.9-py3-none-any.whl",
+      "target": "release/semantic_prompt_transfer-0.26.9-py3-none-any.whl",
+      "size": 199403,
+      "sha256": "ec03b4ee43eb597f1a866c512851cd213a4ecaf0df0636872ad24afd4456c2f0"
+    }
+  ],
+  "demo_assets": [
+    {
+      "role": "credit_report",
+      "source": "demo-assets/신용조사서_ABC기업_v1.0.xlsx",
+      "processing": "deferred_until_review"
+    },
+    {
+      "role": "attachment",
+      "source": "demo-assets/[ABC기업]사업보고서(2026.03.23).pdf",
+      "processing": "deferred_until_review"
+    }
+  ]
+}

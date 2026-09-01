@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
@@ -18,6 +19,55 @@ _STOPWORDS = {
     "현재", "자료", "근거", "기준", "관련", "항목", "현황", "향후", "전망", "확인",
     "신용조사서", "첨부자료", "기타", "해당", "대한", "그리고", "또한", "으로", "에서",
 }
+
+
+_MONEY_TO_MILLION = {
+    "원": Decimal("0.000001"),
+    "천원": Decimal("0.001"),
+    "만원": Decimal("0.01"),
+    "백만원": Decimal("1"),
+    "억원": Decimal("100"),
+}
+_EXPLICIT_MONEY = re.compile(
+    r"(?P<value>\(?[+-]?\d[\d,]*(?:\.\d+)?\)?)\s*(?P<unit>백만원|억원|만원|천원|원)(?![가-힣])"
+)
+
+
+def _money_decimal(value: Any) -> Decimal | None:
+    raw = str(value if value is not None else "").strip()
+    negative = raw.startswith("(") and raw.endswith(")")
+    if negative:
+        raw = raw[1:-1].strip()
+    raw = raw.replace(",", "")
+    try:
+        result = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+    return -result if negative else result
+
+
+def _format_million(value: Decimal) -> str:
+    rounded = value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    if rounded == rounded.to_integral_value():
+        return f"{int(rounded):,}"
+    return f"{rounded:,.1f}"
+
+
+def _normalized_money(value: Any, unit: str | None) -> tuple[str, str | None, bool]:
+    source_unit = str(unit or "").strip()
+    factor = _MONEY_TO_MILLION.get(source_unit)
+    number = _money_decimal(value)
+    if factor is None or number is None:
+        return str(value), unit, False
+    million = number * factor
+    return _format_million(million), "백만원", source_unit != "백만원"
+
+
+def _normalize_explicit_money_text(value: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        number, unit, _ = _normalized_money(match.group("value"), match.group("unit"))
+        return f"{number}{unit or match.group('unit')}"
+    return _EXPLICIT_MONEY.sub(repl, str(value or ""))
 
 
 def _terms(text: str) -> set[str]:
@@ -83,9 +133,10 @@ class EvidenceAssembler:
                 if review_item not in fact.review_items:
                     continue
                 provenance = SourceTier.CREDIT_REPORT_ITEM
-            rendered = f"{fact.field_name}={fact.value}"
-            if fact.unit:
-                rendered += f"; 단위={fact.unit}"
+            display_value, display_unit, unit_normalized = _normalized_money(fact.value, fact.unit)
+            rendered = f"{fact.field_name}={display_value}"
+            if display_unit:
+                rendered += f"; 단위={display_unit}"
             if fact.period:
                 rendered += f"; 기간={fact.period}"
             rows.append(
@@ -104,6 +155,10 @@ class EvidenceAssembler:
                         "formula": fact.formula,
                         "source_hash": fact.source_hash,
                         "source_class": "credit_report",
+                        "raw_value": fact.value,
+                        "raw_unit": fact.unit,
+                        "display_unit": display_unit,
+                        "unit_normalized": unit_normalized,
                     },
                 )
             )
@@ -117,7 +172,7 @@ class EvidenceAssembler:
                     evidence_id=evidence_id("ATT", review_item.value, global_id),
                     review_item=review_item,
                     source_tier=SourceTier.ATTACHMENT,
-                    content=str(hit.get("document") or hit.get("embedding_text") or ""),
+                    content=_normalize_explicit_money_text(str(hit.get("document") or hit.get("embedding_text") or "")),
                     document_id=str(metadata.get("document_id") or "unknown"),
                     source_filename=metadata.get("source_filename"),
                     page=int(pages[0]) if pages else None,
@@ -319,8 +374,10 @@ class ReviewPromptBuilder:
             "단, 동일 사실·동일 기준시점 또는 기간·동일 단위에 대해 두 출처가 직접 충돌할 때에만 "
             "신용조사서 내용을 채택하고 차이가 있음을 명시한다. 기준시점이나 기간이 다르면 충돌로 "
             "간주하지 말고 각 시점의 정보로 함께 활용한다. FEW SHOT은 수치·회사명·기간을 제거한 "
-            "문체와 분석 구조만 참고한다. 수치·부호·단위·기간을 임의 변환하거나 계산하지 않는다. "
-            "각 핵심 주장 문장 끝에는 제공된 [evidence_id]를 붙이고 존재하지 않는 근거 ID를 만들지 않는다."
+            "문체와 분석 구조만 참고한다. 금액은 CURRENT_CASE_EVIDENCE에 표시된 정규화 단위를 그대로 사용한다. "
+            "심사의견 금액 단위는 백만원을 기본으로 하며 원·천원·만원으로 다시 바꾸거나 한 항목 안에서 혼용하지 않는다. "
+            "수치·부호·기간을 임의 계산하지 않는다. 각 핵심 주장 문장 끝에는 제공된 [evidence_id]를 붙이고 "
+            "존재하지 않는 근거 ID를 만들지 않는다."
         )
         example_blocks: list[str] = []
         for example in few_shots:

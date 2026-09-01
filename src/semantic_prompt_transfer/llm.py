@@ -387,70 +387,7 @@ class TransformersMultimodalGenerator:
         return text
 
 
-class FallbackGenerator:
-    """Try the configured LLM, then produce a grounded draft if loading/generation fails."""
-
-    def __init__(self, primary: TextGenerator, fallback: TextGenerator | None = None) -> None:
-        self.primary = primary
-        self.fallback = fallback or EvidenceTemplateGenerator()
-        self.last_backend = "not_run"
-        self.last_error: str | None = None
-
-    @staticmethod
-    def _grounded(text: str, messages: list[dict[str, str]]) -> bool:
-        user = next(
-            (message.get("content", "") for message in reversed(messages) if message.get("role") == "user"),
-            "",
-        )
-        evidence_text = user.split("[CURRENT_CASE_EVIDENCE]", 1)[-1]
-        evidence_text = evidence_text.split("[작성요청]", 1)[0]
-        evidence_ids = set(re.findall(r"evidence_id=([^\n]+)", evidence_text))
-        if evidence_ids and not any(evidence_id in text for evidence_id in evidence_ids):
-            return False
-        scrubbed = text
-        for evidence_id in evidence_ids:
-            scrubbed = scrubbed.replace(evidence_id, "")
-        cell_pattern = re.compile(r"\b[A-Z]{1,3}\d{1,7}(?==)")
-        number_pattern = re.compile(r"(?<![A-Za-z0-9_])[+-]?\d[\d,]*(?:\.\d+)?%?(?![A-Za-z0-9_])")
-        evidence_numbers = {value.replace(",", "") for value in number_pattern.findall(cell_pattern.sub("", evidence_text))}
-        output_numbers = {value.replace(",", "") for value in number_pattern.findall(cell_pattern.sub("", scrubbed))}
-        return output_numbers.issubset(evidence_numbers)
-
-    def generate(self, messages: list[dict[str, str]]) -> str:
-        try:
-            text = self.primary.generate(messages)
-            if not self._grounded(text, messages):
-                raise ValueError("primary output failed the grounding precheck")
-            self.last_backend = type(self.primary).__name__
-            self.last_error = None
-            return text
-        except Exception as exc:
-            self.last_backend = type(self.fallback).__name__
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return self.fallback.generate(messages)
-
-    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
-        # Buffer the primary stream until the grounding precheck succeeds; this avoids
-        # exposing an invalid draft and still preserves the streaming protocol contract.
-        try:
-            primary_stream = getattr(self.primary, "stream", None)
-            if callable(primary_stream):
-                text = "".join(str(token) for token in primary_stream(messages)).strip()
-            else:
-                text = self.primary.generate(messages)
-            if not text or not self._grounded(text, messages):
-                raise ValueError("primary output failed the grounding precheck")
-            self.last_backend = type(self.primary).__name__
-            self.last_error = None
-        except Exception as exc:
-            self.last_backend = type(self.fallback).__name__
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            text = self.fallback.generate(messages)
-        if text:
-            yield str(text)
-
-
 def default_cpu_generator(
     config: CpuGenerationConfig | None = None,
-) -> FallbackGenerator:
-    return FallbackGenerator(TransformersCpuGenerator(config), EvidenceTemplateGenerator())
+) -> TransformersCpuGenerator:
+    return TransformersCpuGenerator(config)

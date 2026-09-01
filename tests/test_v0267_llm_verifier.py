@@ -24,18 +24,18 @@ def claim():
 
 
 def test_clear_bound_error_can_fail():
-    raw = '{"claim_id":"A-001","revision":1,"status":"FAIL","severity":"MINOR","problem_span":"300,000백만원","reason_code":"UNSUPPORTED_NUMERIC","reason":"근거 수치와 불일치","evidence_ids":["CR_00000000000000000001"],"repair_instruction":"근거 수치로 교체"}'
+    raw = '{"claim_id":"A-001","revision":1,"status":"FAIL","severity":"MINOR","problem_span":"300,000백만원","reason_code":"FACT_CONTRADICTION","reason":"근거 수치와 불일치","evidence_ids":["CR_00000000000000000001"],"repair_instruction":"근거 수치로 교체"}'
     result = LLMVerificationAgent(JsonGenerator(raw)).verify(claim(), [evidence()])
     assert result.status is VerificationStatus.FAIL
 
 
 def test_fail_without_exact_span_is_downgraded():
-    raw = '{"status":"FAIL","severity":"MINOR","problem_span":"없는문구","reason_code":"UNSUPPORTED_NUMERIC","reason":"불일치","evidence_ids":["CR_00000000000000000001"],"repair_instruction":"수정"}'
+    raw = '{"status":"FAIL","severity":"MINOR","problem_span":"없는문구","reason_code":"FACT_CONTRADICTION","reason":"불일치","evidence_ids":["CR_00000000000000000001"],"repair_instruction":"수정"}'
     result = LLMVerificationAgent(JsonGenerator(raw)).verify(claim(), [evidence()])
     assert result.status is VerificationStatus.WARN
 
 
 def test_fail_without_bound_evidence_never_mutates():
-    raw = '{"status":"FAIL","severity":"MINOR","problem_span":"300,000백만원","reason_code":"UNSUPPORTED_NUMERIC","reason":"불일치","evidence_ids":[],"repair_instruction":"수정"}'
+    raw = '{"status":"FAIL","severity":"MINOR","problem_span":"300,000백만원","reason_code":"FACT_CONTRADICTION","reason":"불일치","evidence_ids":[],"repair_instruction":"수정"}'
     result = LLMVerificationAgent(JsonGenerator(raw)).verify(claim(), [evidence()])
     assert result.status is VerificationStatus.INSUFFICIENT_EVIDENCE

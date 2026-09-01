@@ -133,9 +133,6 @@ class LLMVerificationAgent:
 
     _FAIL_REASON_CODES = {
         "FACT_CONTRADICTION",
-        "UNSUPPORTED_NUMERIC",
-        "UNSUPPORTED_FACT",
-        "UNSUPPORTED_CAUSAL",
         "PERIOD_MISMATCH",
         "UNIT_MISMATCH",
         "SOURCE_CONFLICT",
@@ -166,13 +163,13 @@ class LLMVerificationAgent:
                     "문체를 개선하지 않는다. 오직 주어진 claim과 evidence의 사실 일치 여부만 판단하여 "
                     "JSON 하나만 반환한다. 기본 판단은 PASS다. 근거가 부족하거나 판단이 애매하면 "
                     "INSUFFICIENT_EVIDENCE 또는 WARN이며 절대로 FAIL로 판정하지 않는다. 문체, 표현 선호, "
-                    "분석 강도의 차이도 WARN 이하로만 판정한다. FAIL은 근거에 의해 명백히 확인되는 수치, "
-                    "기간, 단위, 사실, 인과관계의 직접 오류가 있을 때만 허용한다. 동일 사실·동일 기간·동일 "
+                    "분석 강도의 차이, 근거 미제시, 인과 추론의 강도 차이도 WARN 이하로만 판정한다. FAIL은 "
+                    "근거와 직접 대조해 값·기간·단위·동일 사실이 명백히 충돌하는 경우에만 허용한다. 동일 사실·동일 기간·동일 "
                     "단위가 직접 충돌할 때 신용조사서 근거가 있으면 신용조사서 값을 채택한다. FAIL이면 "
                     "problem_span은 반드시 claim 원문에서 그대로 복사하고, evidence_ids에는 실제 판단에 쓴 "
                     "제공 근거 ID만 넣는다. corrected_sentence나 수정문은 작성하지 않는다. "
-                    "reason_code는 FACT_CONTRADICTION, UNSUPPORTED_NUMERIC, UNSUPPORTED_FACT, "
-                    "UNSUPPORTED_CAUSAL, PERIOD_MISMATCH, UNIT_MISMATCH, SOURCE_CONFLICT 중 하나만 사용한다."
+                    "reason_code는 FACT_CONTRADICTION, PERIOD_MISMATCH, UNIT_MISMATCH, SOURCE_CONFLICT 중 하나만 사용한다. "
+                    "자동 수정이 필요한 경우에도 severity는 MINOR만 사용한다."
                 ),
             },
             {
@@ -217,6 +214,8 @@ class LLMVerificationAgent:
                 )
             if reason_code not in self._FAIL_REASON_CODES:
                 return self._warn(claim, "UNSAFE_FAIL_REASON", reason or "FAIL 사유가 허용 범위를 벗어남")
+            if severity is not RepairSeverity.MINOR:
+                return self._warn(claim, "AUTO_PATCH_SCOPE_TOO_WIDE", "문장/문단 재작성은 자동 반영하지 않음")
             if not problem_span or problem_span not in claim.text:
                 return self._warn(claim, "INVALID_FAIL_SPAN", "FAIL이지만 원문 problem_span을 특정하지 못함")
             if not evidence_ids:
@@ -245,25 +244,19 @@ class LLMVerificationAgent:
 
 
 class PatchGuard:
-    """Ensure verification can never rewrite unrelated claims or sections."""
+    """Only an exact verifier-selected MINOR span may be changed automatically."""
 
     @staticmethod
     def apply(claim: Claim, finding: VerificationFinding, replacement: str) -> str | None:
         replacement = str(replacement or "").strip()
-        if not replacement:
+        if not replacement or finding.severity is not RepairSeverity.MINOR:
             return None
-        if finding.severity is RepairSeverity.MINOR:
-            span = str(finding.problem_span or "")
-            if not span or span not in claim.text:
-                return None
-            if len(replacement) > max(160, len(span) * 3):
-                return None
-            return claim.text.replace(span, replacement, 1)
-        # The caller replaces only claim.start:claim.end, so even a larger correction cannot
-        # mutate a different claim.  Section-wide/A-E rewrites do not exist in this path.
-        if len(replacement) > max(1200, len(claim.text) * 3):
+        span = str(finding.problem_span or "")
+        if not span or span not in claim.text:
             return None
-        return replacement
+        if len(replacement) > max(120, len(span) * 2):
+            return None
+        return claim.text.replace(span, replacement, 1)
 
 
 class RepairCoordinator:
@@ -279,11 +272,10 @@ class RepairCoordinator:
         evidence: Iterable[EvidenceRecord],
     ) -> str | None:
         evidence_text = "\n".join(f"[{row.evidence_id}] {row.content}" for row in evidence)
+        if finding.severity is not RepairSeverity.MINOR:
+            return None
         for _ in range(self.max_attempts):
-            if finding.severity is RepairSeverity.MINOR:
-                output_rule = "문장 전체가 아니라 problem_span을 대체할 문자열만 출력한다."
-            else:
-                output_rule = "해당 claim 하나만 다시 작성한다. 다른 문장이나 설명을 출력하지 않는다."
+            output_rule = "문장 전체가 아니라 problem_span을 대체할 문자열만 출력한다."
             messages = [
                 {
                     "role": "system",

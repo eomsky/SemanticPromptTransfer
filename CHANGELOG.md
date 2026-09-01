@@ -1,3 +1,11 @@
+## 0.26.9 - 2026-09-01
+
+- Deleted FallbackGenerator from runtime, public exports, and tests.
+- Restricted automatic verifier mutation to exact MINOR spans for hard evidence conflicts, at most one patch per review section.
+- Normalized structured monetary evidence to 백만원 and instructed generation not to mix 원/천원/만원 units.
+- Added a completion guard that continues a prematurely ended Korean review sentence without introducing new analysis.
+- Increased the Colab per-call output budget from 1400 to 1800 tokens while retaining continuation support.
+
 ## 0.26.8 - 2026-09-01
 
 - Removed FallbackGenerator and its hidden grounding precheck from the operational review-generation lane.

@@ -22,7 +22,6 @@ from .colab_runtime import EphemeralColabConfig, EphemeralColabRuntime
 from .llm import (
     CpuGenerationConfig,
     EvidenceTemplateGenerator,
-    FallbackGenerator,
     OpenAICompatibleHttpGenerator,
     RemoteGenerationConfig,
     TextGenerator,
@@ -94,7 +93,6 @@ __all__ = [
     "FewShotRegistry",
     "FewShotSelector",
     "FileStatus",
-    "FallbackGenerator",
     "InMemoryVectorStore",
     "DocumentScope",
     "IndexWriteStrategy",
