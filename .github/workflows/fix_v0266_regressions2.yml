@@ -1,0 +1,83 @@
+name: Final v0.26.6 regression fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/v0266_fix2.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply focused fixes and run full tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/semantic_prompt_transfer/poc_review.py')
+          text = p.read_text(encoding='utf-8')
+          old = '''            def on_claim(item: ReviewItem, payload: dict[str, Any]) -> None:\n                event = dict(payload); event_type = str(event.pop("type", "claim_complete"))\n                self._publish(job_id, event_type, review_item=item.value, **event)\n\n            def on_patch(item: ReviewItem, payload: dict[str, Any]) -> None:\n                event = dict(payload); event_type = str(event.pop("type", "claim_patch"))\n                self._publish(job_id, event_type, review_item=item.value, **event)\n'''
+          new = '''            def on_claim(item: ReviewItem, payload: dict[str, Any]) -> None:\n                event = dict(payload)\n                event_type = str(event.pop("type", "claim_complete"))\n                event.pop("review_item", None)\n                self._publish(job_id, event_type, review_item=item.value, **event)\n\n            def on_patch(item: ReviewItem, payload: dict[str, Any]) -> None:\n                event = dict(payload)\n                event_type = str(event.pop("type", "claim_patch"))\n                event.pop("review_item", None)\n                self._publish(job_id, event_type, review_item=item.value, **event)\n'''
+          assert text.count(old) == 1
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              '"현재 처리 가능한 근거 범위가 제한되어 해당 심사항목은 추가 자료 확인이 필요하다."',
+              '"일시적인 처리 문제로 해당 심사항목의 문구를 확정하지 못했습니다."'
+          )
+          text = text.replace(
+              '"보수적 대체문구로 심사의견 생성을 완료했습니다."',
+              '"기술 복구를 포함해 심사의견 생성을 완료했습니다."'
+          )
+          p.write_text(text, encoding='utf-8')
+
+          e = Path('src/semantic_prompt_transfer/evidence_capture.py')
+          capture = e.read_text(encoding='utf-8')
+          capture = capture.replace(
+              'bounds = [range_boundaries(value) for value in highlight_ranges]\n            min_col = min(value[0] for value in bounds); min_row = min(value[1] for value in bounds)\n            max_col = max(value[2] for value in bounds); max_row = max(value[3] for value in bounds)',
+              'highlight_bounds = [range_boundaries(value) for value in highlight_ranges]\n            min_col = min(value[0] for value in highlight_bounds); min_row = min(value[1] for value in highlight_bounds)\n            max_col = max(value[2] for value in highlight_bounds); max_row = max(value[3] for value in highlight_bounds)',
+              1,
+          )
+          capture = capture.replace('for b in bounds\n                    )', 'for b in highlight_bounds\n                    )', 1)
+          e.write_text(capture, encoding='utf-8')
+
+          t = Path('tests/test_colab_poc.py')
+          tests = t.read_text(encoding='utf-8')
+          tests = tests.replace(
+              'if "후속 대화이므로" in messages[0]["content"]:\n                    yield "이전 대화와 심사의견을 이해한 후속 답변입니다."',
+              'if "자유대화에는" in messages[0]["content"]:\n                    yield "이전 자유대화를 이해한 자연스러운 후속 답변입니다."',
+              1,
+          )
+          old_asserts = '''            self.assertIn("[완료된 심사의견]", combined)\n            self.assertIn("첫 번째 질문", combined)\n            self.assertIn("이전 대화와 심사의견을 이해한 후속 답변입니다.", combined)\n            self.assertNotIn("과거 사례 입력", combined)\n'''
+          new_asserts = '''            self.assertNotIn("[완료된 심사의견]", combined)\n            self.assertIn("첫 번째 질문", combined)\n            self.assertIn("이전 자유대화를 이해한 자연스러운 후속 답변입니다.", combined)\n            self.assertNotIn("과거 사례 입력", combined)\n            self.assertNotIn("[업로드 근거자료]", combined)\n'''
+          assert tests.count(old_asserts) == 1
+          tests = tests.replace(old_asserts, new_asserts, 1)
+          t.write_text(tests, encoding='utf-8')
+          PY
+          python -m pip install --upgrade pip pytest >/dev/null
+          python -m pip install -e '.[poc]' >/dev/null
+          python -m compileall -q src/semantic_prompt_transfer
+          pytest -q
+      - name: Commit final regression fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/v0266_fix2.trigger .github/workflows/fix_v0266_regressions2.yml
+          rm -f .github/v0266_fix.trigger .github/workflows/fix_v0266_regressions.yml
+          rm -f .github/v0266_debug.trigger .github/workflows/debug_v0266.yml
+          git add -A
+          git commit -m 'Fix v0.26.6 claim events chat policy and evidence capture'
+          git push origin main
