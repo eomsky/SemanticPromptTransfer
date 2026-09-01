@@ -34,7 +34,7 @@ jobs:
           python -m compileall -q src tests
           python -c "import semantic_prompt_transfer as spt; assert spt.__version__ == '0.26.11'; assert not hasattr(spt,'FallbackGenerator')"
           python -c "import json; from pathlib import Path; nb=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.11_COLAB_LAUNCHER.ipynb').read_text()); [compile(''.join(c.get('source',[])),f'cell-{i}','exec') for i,c in enumerate(nb['cells']) if c.get('cell_type')=='code']"
-          python -c "from pathlib import Path; t=Path('notebooks/SemanticPromptTransfer_v0.26.11_COLAB_LAUNCHER.ipynb').read_text(); assert 'MODEL_CONTEXT_TOKENS = 28672' in t; assert 'max_new_tokens=3600' in t; assert '\"--max-num-seqs\", \"2\"' in t; assert '136,281' in t; assert '500,000, 2024년 575,000' not in t"
+          python -c "import json; from pathlib import Path; nb=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.11_COLAB_LAUNCHER.ipynb').read_text()); code='\n'.join(''.join(c.get('source',[])) for c in nb['cells'] if c.get('cell_type')=='code'); assert 'MODEL_CONTEXT_TOKENS = 28672' in code; assert 'max_new_tokens=3600' in code; assert '\"--max-num-seqs\", \"2\"' in code; assert '136,281' in code; assert '500,000, 2024년 575,000' not in code"
           python -c "from semantic_prompt_transfer.review import _sanitize_style_text; s=_sanitize_style_text('2025년 123,456백만원'); assert '[VALUE]' not in s and '[PERIOD]' not in s"
 
       - name: Build wheel and release assets
@@ -62,4 +62,4 @@ jobs:
           name: SemanticPromptTransfer-v0.26.11-release
           path: release_v02611/*
 
-# retry marker: background preprocessing regression finalized
+# retry marker: parsed-notebook validation
