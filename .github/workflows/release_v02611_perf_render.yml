@@ -62,4 +62,4 @@ jobs:
           name: SemanticPromptTransfer-v0.26.11-release
           path: release_v02611/*
 
-# retry marker: legacy preprocessing expectations finalized
+# retry marker: background preprocessing regression finalized
