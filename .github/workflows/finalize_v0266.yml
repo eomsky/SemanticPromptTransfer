@@ -1,0 +1,128 @@
+name: Finalize v0.26.6 validated release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/v0266_finalize.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install and validate integrated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build pytest >/dev/null
+          python -m pip install -e '.[poc]' >/dev/null
+          python -m compileall -q src/semantic_prompt_transfer
+          pytest -q
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          notebook = Path('notebooks/SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb')
+          value = json.loads(notebook.read_text(encoding='utf-8'))
+          code = '\n'.join(''.join(cell.get('source', [])) for cell in value['cells'] if cell.get('cell_type') == 'code')
+          for cell in value['cells']:
+              if cell.get('cell_type') == 'code':
+                  compile(''.join(cell.get('source', [])), notebook.name, 'exec')
+          assert 'RELEASE = "v0.26.6"' in code
+          assert 'PACKAGE_VERSION = "0.26.6"' in code
+          assert '136,281' in code
+          assert '500,000, 2024년 575,000, 2025년 632,500' not in code
+          PY
+
+      - name: Build wheel and release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist build
+          python -m build --wheel
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          root = Path('.')
+          wheel = next((root/'dist').glob('semantic_prompt_transfer-0.26.6-*.whl'))
+          launcher = root/'notebooks'/'SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb'
+          def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+          manifest = {
+              'schema_version': 3,
+              'release': 'v0.26.6',
+              'package_version': '0.26.6',
+              'drive_root': '/content/drive/MyDrive/SemanticPromptTransfer',
+              'runtime_root': '/content/spt_poc_runtime',
+              'stage_root': '/content/spt_bootstrap_v0266',
+              'base_asset_manifest': 'runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json',
+              'assets': [{
+                  'role': 'wheel',
+                  'source': f'versions/v0.26.6/{wheel.name}',
+                  'target': f'release/{wheel.name}',
+                  'size': wheel.stat().st_size,
+                  'sha256': sha(wheel),
+              }],
+              'demo_assets': [
+                  {'role':'credit_report','source':'demo-assets/신용조사서_ABC기업_v1.0.xlsx','processing':'deferred_until_review'},
+                  {'role':'attachment','source':'demo-assets/[ABC기업]사업보고서(2026.03.23).pdf','processing':'deferred_until_review'},
+              ],
+          }
+          manifest_path = root/'notebooks'/'SemanticPromptTransfer_v0.26.6_COLAB_ASSETS.json'
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+          validation = root/'docs'/'VALIDATION_v0.26.6.md'
+          validation.write_text(f'''# SemanticPromptTransfer v0.26.6 검증 기록\n\n검증일: 2026-09-01\n\n## 핵심 변경\n- 규칙 기반 semantic validator의 생성 제어 제거, 기본 VerificationMode=OFF\n- 향후 SHADOW/ENFORCE용 claim 단위 검증과 최소 span patch 구조\n- 자유대화 GENERAL / CASE_QA / OPINION_QA 분리, CASE_QA query-time RAG\n- 자유대화에는 검증 LLM·few-shot·repair 미적용\n- 동일 화면/표 근거 병합, 관련성 범위 내 시각적 근거 다양성 우선\n- Word 본문 [근거 N]와 근거 캡처 부록, 내부 북마크/복귀 링크\n- Word 상단은 심사건만 유지\n- PDF/XLSX context-first 근거 캡처 및 실제 근거 영역 highlight\n- v0.26.5 FEW SHOT 구조 유지 및 이미지 기준 FEW_SHOT_1 승계\n\n## 자동 검증\n- 전체 pytest 통과\n- Python compileall 통과\n- v0.26.6 Colab notebook 전체 code cell compile 통과\n- 새 FEW_SHOT_1 식별값 포함 및 구 FEW_SHOT_1 식별값 미포함 확인\n\n## 산출물\n| 산출물 | 크기 | SHA-256 |\n|---|---:|---|\n| {wheel.name} | {wheel.stat().st_size:,} | `{sha(wheel)}` |\n| {launcher.name} | {launcher.stat().st_size:,} | `{sha(launcher)}` |\n| {manifest_path.name} | {manifest_path.stat().st_size:,} | `{sha(manifest_path)}` |\n\n실제 A100 Gemma 4 가중치 적재와 첫 실데이터 생성 품질은 Colab 운영 테스트에서 최종 확인한다.\n''', encoding='utf-8')
+          print(f'WHEEL={wheel.name}')
+          print(f'WHEEL_SIZE={wheel.stat().st_size}')
+          print(f'WHEEL_SHA256={sha(wheel)}')
+          print(f'LAUNCHER_SIZE={launcher.stat().st_size}')
+          print(f'LAUNCHER_SHA256={sha(launcher)}')
+          print(f'MANIFEST_SIZE={manifest_path.stat().st_size}')
+          print(f'MANIFEST_SHA256={sha(manifest_path)}')
+          PY
+
+      - name: Commit final v0.26.6 source and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -rf .github/v0266_patch
+          rm -f .github/v0266_release.trigger .github/v0266_finalize.trigger
+          rm -f .github/workflows/release_v0266.yml .github/workflows/finalize_v0266.yml
+          git add -A
+          git commit -m 'Release v0.26.6 validated architecture'
+          git push origin main
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WHEEL=$(ls dist/semantic_prompt_transfer-0.26.6-*.whl)
+          ASSETS=("$WHEEL" notebooks/SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb notebooks/SemanticPromptTransfer_v0.26.6_COLAB_ASSETS.json docs/VALIDATION_v0.26.6.md docs/COLAB_ONE_CLICK_v0.26.6.md)
+          if gh release view v0.26.6 >/dev/null 2>&1; then
+            gh release upload v0.26.6 "${ASSETS[@]}" --clobber
+          else
+            gh release create v0.26.6 "${ASSETS[@]}" --target main --title 'SemanticPromptTransfer v0.26.6' --notes 'Non-destructive verification lanes, query-time chat RAG, human evidence tracing, and context-first evidence captures.'
+          fi
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SemanticPromptTransfer-v0.26.6-release
+          path: |
+            dist/semantic_prompt_transfer-0.26.6-*.whl
+            notebooks/SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb
+            notebooks/SemanticPromptTransfer_v0.26.6_COLAB_ASSETS.json
+            docs/VALIDATION_v0.26.6.md
+            docs/COLAB_ONE_CLICK_v0.26.6.md
