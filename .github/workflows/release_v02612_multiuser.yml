@@ -25,6 +25,15 @@ jobs:
           python tools/patch_v02612_multiuser.py
           python tools/patch_v02612_queuefix.py
 
+      - name: Capture patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: v02612-patched-source-debug
+          path: |
+            src/semantic_prompt_transfer
+            tests/test_v02612_multiuser.py
+            notebooks/SemanticPromptTransfer_v0.26.12_COLAB_LAUNCHER.ipynb
+
       - name: Install and validate source tree
         run: |
           python -m pip install --upgrade pip >/dev/null
