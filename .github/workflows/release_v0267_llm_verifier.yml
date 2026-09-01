@@ -1,0 +1,357 @@
+name: Release v0.26.7 LLM verifier
+
+on:
+  push:
+    paths:
+      - '.github/workflows/release_v0267_llm_verifier.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Patch v0.26.7 verifier architecture
+        shell: bash
+        run: |
+          cat > /tmp/patch_v0267.py <<'PY'
+          from pathlib import Path
+          import json, re
+
+          root = Path('.')
+
+          def replace_exact(path: str, old: str, new: str) -> None:
+              p = root / path
+              text = p.read_text(encoding='utf-8')
+              if old not in text:
+                  raise RuntimeError(f'missing patch target in {path}: {old[:80]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # 1) Conservative LLM verifier: only explicit factual contradictions may FAIL.
+          vf = root / 'src/semantic_prompt_transfer/verification_flow.py'
+          text = vf.read_text(encoding='utf-8')
+          start = text.index('class LLMVerificationAgent:')
+          end = text.index('\n\nclass PatchGuard:', start)
+          verifier = r'''class LLMVerificationAgent:
+              """Claim-local verifier that never writes review prose.
+
+              FAIL is deliberately narrow: only a clear evidence-backed factual error may
+              request a patch. Ambiguity, missing evidence, style preference, or analytical
+              disagreement cannot mutate generated text.
+              """
+
+              _FAIL_REASON_CODES = {
+                  "FACT_CONTRADICTION",
+                  "UNSUPPORTED_NUMERIC",
+                  "UNSUPPORTED_FACT",
+                  "UNSUPPORTED_CAUSAL",
+                  "PERIOD_MISMATCH",
+                  "UNIT_MISMATCH",
+                  "SOURCE_CONFLICT",
+              }
+
+              def __init__(self, generator: TextGenerator) -> None:
+                  self.generator = generator
+
+              @staticmethod
+              def _warn(claim: Claim, code: str, reason: str) -> VerificationFinding:
+                  return VerificationFinding(
+                      claim.claim_id,
+                      claim.revision,
+                      VerificationStatus.WARN,
+                      reason_code=code,
+                      reason=reason,
+                  )
+
+              def verify(self, claim: Claim, evidence: Iterable[EvidenceRecord]) -> VerificationFinding:
+                  rows = tuple(evidence)
+                  allowed_ids = {row.evidence_id for row in rows}
+                  evidence_text = "\n".join(f"[{row.evidence_id}] {row.content}" for row in rows) or "근거 없음"
+                  messages = [
+                      {
+                          "role": "system",
+                          "content": (
+                              "당신은 기업여신 심사의견의 독립 검증 에이전트다. 최종 문장을 직접 작성하거나 "
+                              "문체를 개선하지 않는다. 오직 주어진 claim과 evidence의 사실 일치 여부만 판단하여 "
+                              "JSON 하나만 반환한다. 기본 판단은 PASS다. 근거가 부족하거나 판단이 애매하면 "
+                              "INSUFFICIENT_EVIDENCE 또는 WARN이며 절대로 FAIL로 판정하지 않는다. 문체, 표현 선호, "
+                              "분석 강도의 차이도 WARN 이하로만 판정한다. FAIL은 근거에 의해 명백히 확인되는 수치, "
+                              "기간, 단위, 사실, 인과관계의 직접 오류가 있을 때만 허용한다. 동일 사실·동일 기간·동일 "
+                              "단위가 직접 충돌할 때 신용조사서 근거가 있으면 신용조사서 값을 채택한다. FAIL이면 "
+                              "problem_span은 반드시 claim 원문에서 그대로 복사하고, evidence_ids에는 실제 판단에 쓴 "
+                              "제공 근거 ID만 넣는다. corrected_sentence나 수정문은 작성하지 않는다. "
+                              "reason_code는 FACT_CONTRADICTION, UNSUPPORTED_NUMERIC, UNSUPPORTED_FACT, "
+                              "UNSUPPORTED_CAUSAL, PERIOD_MISMATCH, UNIT_MISMATCH, SOURCE_CONFLICT 중 하나만 사용한다."
+                          ),
+                      },
+                      {
+                          "role": "user",
+                          "content": (
+                              f"claim_id={claim.claim_id}\nrevision={claim.revision}\nclaim={claim.text}\n\n"
+                              f"[evidence]\n{evidence_text}\n\n"
+                              "다음 key만 가진 JSON을 반환하라: claim_id, revision, status, severity, problem_span, "
+                              "reason_code, reason, evidence_ids, repair_instruction. status는 PASS/WARN/FAIL/"
+                              "INSUFFICIENT_EVIDENCE, severity는 MINOR/CLAIM_ERROR/PARAGRAPH_ERROR 중 하나다."
+                          ),
+                      },
+                  ]
+                  try:
+                      raw = str(self.generator.generate(messages) or "").strip()
+                  except Exception as exc:
+                      return self._warn(claim, "VERIFIER_GENERATION_ERROR", f"검증 LLM 호출 실패: {type(exc).__name__}")
+                  match = re.search(r"\{.*\}", raw, flags=re.S)
+                  if not match:
+                      return self._warn(claim, "VERIFIER_PARSE_ERROR", "검증 LLM JSON 파싱 실패")
+                  try:
+                      value = json.loads(match.group(0))
+                      status = VerificationStatus(str(value.get("status") or "WARN").upper())
+                      severity = RepairSeverity(str(value.get("severity") or "MINOR").upper())
+                  except Exception:
+                      return self._warn(claim, "VERIFIER_SCHEMA_ERROR", "검증 LLM 응답 스키마 오류")
+
+                  problem_span = str(value.get("problem_span") or "")
+                  reason_code = str(value.get("reason_code") or "").upper()
+                  reason = str(value.get("reason") or "")
+                  evidence_ids = tuple(
+                      eid for eid in (str(v) for v in value.get("evidence_ids", [])) if eid in allowed_ids
+                  )
+                  repair_instruction = str(value.get("repair_instruction") or "")
+
+                  # Fail-closed for mutation: verifier uncertainty can never rewrite prose.
+                  if status is VerificationStatus.FAIL:
+                      if not rows:
+                          return VerificationFinding(
+                              claim.claim_id, claim.revision, VerificationStatus.INSUFFICIENT_EVIDENCE,
+                              reason_code="NO_EVIDENCE", reason="검증에 사용할 근거가 없음",
+                          )
+                      if reason_code not in self._FAIL_REASON_CODES:
+                          return self._warn(claim, "UNSAFE_FAIL_REASON", reason or "FAIL 사유가 허용 범위를 벗어남")
+                      if not problem_span or problem_span not in claim.text:
+                          return self._warn(claim, "INVALID_FAIL_SPAN", "FAIL이지만 원문 problem_span을 특정하지 못함")
+                      if not evidence_ids:
+                          return VerificationFinding(
+                              claim.claim_id, claim.revision, VerificationStatus.INSUFFICIENT_EVIDENCE,
+                              reason_code="UNBOUND_FAIL_EVIDENCE", reason="FAIL 판정을 특정 근거에 연결하지 못함",
+                          )
+
+                  if status is VerificationStatus.INSUFFICIENT_EVIDENCE:
+                      problem_span = ""
+                      repair_instruction = ""
+                  if status in {VerificationStatus.PASS, VerificationStatus.WARN}:
+                      repair_instruction = ""
+
+                  return VerificationFinding(
+                      claim_id=claim.claim_id,
+                      revision=claim.revision,
+                      status=status,
+                      severity=severity,
+                      problem_span=problem_span,
+                      reason_code=reason_code,
+                      reason=reason,
+                      evidence_ids=evidence_ids,
+                      repair_instruction=repair_instruction,
+                  )
+          '''
+          # Dedent class block from workflow indentation.
+          import textwrap
+          verifier = textwrap.dedent(verifier)
+          vf.write_text(text[:start] + verifier + text[end:], encoding='utf-8')
+
+          # 2) Service can activate an actual LLM verifier while keeping direct callers backward compatible.
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_review.py',
+              'from .review_docx import OpinionDocumentBuilder\n',
+              'from .review_docx import OpinionDocumentBuilder\nfrom .verification_flow import LLMVerificationAgent, VerificationMode\n',
+          )
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_review.py',
+              '        company_name: str | None = None,\n    ) -> None:',
+              '        company_name: str | None = None,\n        verification_mode: VerificationMode | str = VerificationMode.OFF,\n        verification_generator: TextGenerator | None = None,\n    ) -> None:',
+          )
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_review.py',
+              '        self.chat_router = ChatIntentRouter()\n        self.orchestrator = ReviewGenerationOrchestrator(\n',
+              '        self.chat_router = ChatIntentRouter()\n        mode = VerificationMode(str(getattr(verification_mode, "value", verification_mode)).upper())\n        verifier = LLMVerificationAgent(verification_generator or generator) if mode is not VerificationMode.OFF else None\n        self.orchestrator = ReviewGenerationOrchestrator(\n',
+          )
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_review.py',
+              '            document_builder=OpinionDocumentBuilder(capture_service=self.capture_service),\n            verification_mode="OFF",\n',
+              '            document_builder=OpinionDocumentBuilder(capture_service=self.capture_service),\n            verification_mode=mode,\n            verifier=verifier,\n',
+          )
+
+          # 3) Keep the raw primary generator for verification; generation may still use technical fallback wrapper.
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_bootstrap.py',
+              '    anonymous_access: bool = False,\n) -> ColabPocBundle:',
+              '    anonymous_access: bool = False,\n    verification_mode: str = "OFF",\n) -> ColabPocBundle:',
+          )
+          old_gen = '''        if generator is not None:\n            # Every configured primary, including the local native-vLLM adapter, is\n            # wrapped so transport/model faults and grounding precheck failures converge\n            # to deterministic current-case evidence instead of a terminal job failure.\n            text_generator: TextGenerator = FallbackGenerator(generator, EvidenceTemplateGenerator())\n        elif llm_base_url:\n            primary = OpenAICompatibleHttpGenerator(\n                RemoteGenerationConfig(\n                    base_url=llm_base_url,\n                    model=llm_model,\n                    api_key=llm_api_key,\n                )\n            )\n            text_generator = FallbackGenerator(primary, EvidenceTemplateGenerator())\n        else:\n            text_generator = EvidenceTemplateGenerator()\n'''
+          new_gen = '''        primary_generator: TextGenerator | None = None\n        if generator is not None:\n            # Generation keeps technical fallback, while verification talks to the actual primary LLM.\n            primary_generator = generator\n            text_generator: TextGenerator = FallbackGenerator(generator, EvidenceTemplateGenerator())\n        elif llm_base_url:\n            primary_generator = OpenAICompatibleHttpGenerator(\n                RemoteGenerationConfig(\n                    base_url=llm_base_url,\n                    model=llm_model,\n                    api_key=llm_api_key,\n                )\n            )\n            text_generator = FallbackGenerator(primary_generator, EvidenceTemplateGenerator())\n        else:\n            text_generator = EvidenceTemplateGenerator()\n'''
+          replace_exact('src/semantic_prompt_transfer/poc_bootstrap.py', old_gen, new_gen)
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_bootstrap.py',
+              '            text_generator,\n            upload_processor,\n        )',
+              '            text_generator,\n            upload_processor,\n            verification_mode=verification_mode,\n            verification_generator=primary_generator,\n        )',
+          )
+          replace_exact(
+              'src/semantic_prompt_transfer/poc_bootstrap.py',
+              '        allowed_origins=origins,\n',
+              '        allowed_origins=origins,\n        verification_mode=os.environ.get("SPT_VERIFICATION_MODE", "ENFORCE"),\n',
+          )
+
+          # 4) Documentation of core behavior.
+          replace_exact(
+              'src/semantic_prompt_transfer/orchestration.py',
+              '    v0.26.6 defaults to OFF. SHADOW observes completed claims without changing the\n    generated opinion. ENFORCE can only patch the failing claim/span; whole-section\n',
+              '    The reusable core defaults to OFF. The v0.26.7 Colab POC activates an LLM verifier\n    in ENFORCE mode. ENFORCE can only patch the failing claim/span; whole-section\n',
+          )
+
+          # 5) Version sources.
+          replace_exact('src/semantic_prompt_transfer/version.py', 'PACKAGE_VERSION = "0.26.6"', 'PACKAGE_VERSION = "0.26.7"')
+          replace_exact('pyproject.toml', 'version = "0.26.6"', 'version = "0.26.7"')
+
+          # 6) Changelog.
+          changelog = root / 'CHANGELOG.md'
+          current = changelog.read_text(encoding='utf-8')
+          entry = '''## 0.26.7 - 2026-09-01\n\n- Activated a real claim-level LLM verification agent in the Colab review lane; the verifier shares the loaded Gemma 4 engine without loading a second model.\n- Restricted FAIL to explicit evidence-bound factual errors. Ambiguity and insufficient evidence never mutate review prose.\n- Kept free chat completely outside the verification lane.\n- Preserved minimal-span/claim repair and PatchGuard; full section or A-E rewrites remain structurally prohibited.\n\n'''
+          if '## 0.26.7 - 2026-09-01' not in current:
+              changelog.write_text(entry + current, encoding='utf-8')
+
+          # 7) Focused regression tests.
+          test = root / 'tests/test_v0267_llm_verifier.py'
+          test.write_text(r'''from semantic_prompt_transfer.domain import EvidenceRecord, ReviewItem, SourceTier\nfrom semantic_prompt_transfer.verification_flow import (\n    Claim, LLMVerificationAgent, RepairCoordinator, VerificationStatus\n)\n\n\nclass JsonGenerator:\n    def __init__(self, text): self.text = text\n    def generate(self, messages): return self.text\n\n\ndef evidence():\n    return EvidenceRecord(\n        evidence_id="CR_00000000000000000001", review_item=ReviewItem.MAJOR_ACCOUNTS,\n        source_tier=SourceTier.CREDIT_REPORT, content="2025년 총차입금은 314,398백만원임",\n        document_id="d", source_filename="credit.xlsx", metadata={}\n    )\n\n\ndef claim():\n    text = "2025년 총차입금은 300,000백만원으로 증가함."\n    return Claim("A-001", ReviewItem.MAJOR_ACCOUNTS, text, 0, len(text),\n                 ("CR_00000000000000000001",), 1)\n\n\ndef test_clear_bound_error_can_fail():\n    raw = '{"claim_id":"A-001","revision":1,"status":"FAIL","severity":"MINOR","problem_span":"300,000백만원","reason_code":"UNSUPPORTED_NUMERIC","reason":"근거 수치와 불일치","evidence_ids":["CR_00000000000000000001"],"repair_instruction":"근거 수치로 교체"}'\n    result = LLMVerificationAgent(JsonGenerator(raw)).verify(claim(), [evidence()])\n    assert result.status is VerificationStatus.FAIL\n\n\ndef test_fail_without_exact_span_is_downgraded():\n    raw = '{"status":"FAIL","severity":"MINOR","problem_span":"없는문구","reason_code":"UNSUPPORTED_NUMERIC","reason":"불일치","evidence_ids":["CR_00000000000000000001"],"repair_instruction":"수정"}'\n    result = LLMVerificationAgent(JsonGenerator(raw)).verify(claim(), [evidence()])\n    assert result.status is VerificationStatus.WARN\n\n\ndef test_fail_without_bound_evidence_never_mutates():\n    raw = '{"status":"FAIL","severity":"MINOR","problem_span":"300,000백만원","reason_code":"UNSUPPORTED_NUMERIC","reason":"불일치","evidence_ids":[],"repair_instruction":"수정"}'\n    result = LLMVerificationAgent(JsonGenerator(raw)).verify(claim(), [evidence()])\n    assert result.status is VerificationStatus.INSUFFICIENT_EVIDENCE\n'''.replace('\\n','\n'), encoding='utf-8')
+
+          print('v0.26.7 source patch complete')
+          PY
+          python /tmp/patch_v0267.py
+
+      - name: Install test and build dependencies
+        run: |
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -e '.[poc]' pytest build >/dev/null
+
+      - name: Run regression tests and compile
+        run: |
+          pytest -q
+          python -m compileall -q src tests
+
+      - name: Build wheel and release files
+        shell: bash
+        run: |
+          python -m build --wheel
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, textwrap
+
+          root = Path('.')
+          wheel = next((root/'dist').glob('semantic_prompt_transfer-0.26.7-*.whl'))
+          wheel_size = wheel.stat().st_size
+          wheel_sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+          # Copy the validated v0.26.6 one-click notebook and activate ENFORCE explicitly.
+          source = root/'notebooks/SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb'
+          target = root/'notebooks/SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb'
+          nb = json.loads(source.read_text(encoding='utf-8'))
+          for cell in nb.get('cells', []):
+              src = cell.get('source', [])
+              joined = ''.join(src)
+              joined = joined.replace('v0.26.6', 'v0.26.7').replace('0.26.6', '0.26.7').replace('v0266', 'v0267')
+              if cell.get('cell_type') == 'code' and 'bundle = build_colab_poc(' in joined and 'verification_mode=' not in joined:
+                  joined = joined.replace(
+                      '        generator=local_generator,\n',
+                      '        generator=local_generator,\n        verification_mode="ENFORCE",\n',
+                  )
+              if cell.get('cell_type') == 'markdown' and joined.startswith('# SemanticPromptTransfer v0.26.7'):
+                  joined += '\n\nv0.26.7은 동일 Gemma 4 엔진을 공유하는 독립 검증 LLM을 ENFORCE 모드로 연결합니다. 검증은 claim 단위로 수행하며 명백한 근거 오류만 최소 span/claim patch로 수정하고, 자유대화에는 적용하지 않습니다.\n'
+              cell['source'] = joined.splitlines(keepends=True)
+          nb.setdefault('metadata', {}).setdefault('colab', {})['name'] = target.name
+          target.write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding='utf-8')
+
+          # Compile every code cell.
+          for idx, cell in enumerate(nb.get('cells', [])):
+              if cell.get('cell_type') == 'code':
+                  compile(''.join(cell.get('source', [])), f'cell-{idx}', 'exec')
+          code = '\n'.join(''.join(c.get('source', [])) for c in nb.get('cells', []) if c.get('cell_type') == 'code')
+          assert 'verification_mode="ENFORCE"' in code
+          assert '136,281' in code and '500,000' not in code
+
+          manifest = {
+              'schema_version': 3,
+              'release': 'v0.26.7',
+              'package_version': '0.26.7',
+              'drive_root': '/content/drive/MyDrive/SemanticPromptTransfer',
+              'runtime_root': '/content/spt_poc_runtime',
+              'stage_root': '/content/spt_bootstrap_v0267',
+              'base_asset_manifest': 'runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json',
+              'assets': [{
+                  'role': 'wheel',
+                  'source': 'versions/v0.26.7/' + wheel.name,
+                  'target': 'release/' + wheel.name,
+                  'size': wheel_size,
+                  'sha256': wheel_sha,
+              }],
+              'demo_assets': [
+                  {'role':'credit_report','source':'demo-assets/신용조사서_ABC기업_v1.0.xlsx','processing':'deferred_until_review'},
+                  {'role':'attachment','source':'demo-assets/[ABC기업]사업보고서(2026.03.23).pdf','processing':'deferred_until_review'},
+              ],
+          }
+          manifest_path = root/'notebooks/SemanticPromptTransfer_v0.26.7_COLAB_ASSETS.json'
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+
+          notebook_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+          manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+          validation = f'''# SemanticPromptTransfer v0.26.7 검증 기록\n\n검증일: 2026-09-01\n\n## 핵심 변경\n- 실제 LLMVerificationAgent를 Colab 심사의견 lane에 ENFORCE로 활성화\n- 생성 LLM과 검증 LLM은 동일 Gemma 4/vLLM 엔진을 공유하되 별도 system prompt와 JSON 검증 스키마 사용\n- FAIL은 특정 evidence에 연결된 명백한 사실 오류만 허용\n- WARN/INSUFFICIENT_EVIDENCE는 생성문을 수정하지 않음\n- FAIL도 problem_span 또는 claim 범위만 PatchGuard를 통해 수정\n- 자유대화 GENERAL/CASE_QA/OPINION_QA에는 검증 LLM 미적용\n- v0.26.6의 근거 병합·다양성·Word 근거 부록·context-first capture 및 새 FEW_SHOT_1 유지\n\n## 자동 검증\n- 전체 pytest 통과\n- Python compileall 통과\n- v0.26.7 Colab notebook 전체 code cell compile 통과\n- Colab notebook verification_mode=ENFORCE 확인\n- 새 FEW_SHOT_1 식별값 포함 및 구 FEW_SHOT_1 식별값 미포함 확인\n\n## 산출물\n| 산출물 | 크기 | SHA-256 |\n|---|---:|---|\n| {wheel.name} | {wheel_size:,} | `{wheel_sha}` |\n| {target.name} | {target.stat().st_size:,} | `{notebook_sha}` |\n| {manifest_path.name} | {manifest_path.stat().st_size:,} | `{manifest_sha}` |\n\n실제 A100에서 Gemma 4 생성→claim 검증→최소 patch의 체감 품질은 Colab 실데이터 테스트에서 최종 확인한다.\n'''
+          docs = root/'docs'; docs.mkdir(exist_ok=True)
+          (docs/'VALIDATION_v0.26.7.md').write_text(validation, encoding='utf-8')
+          (docs/'COLAB_ONE_CLICK_v0.26.7.md').write_text(
+              '# SemanticPromptTransfer v0.26.7 Colab 실행\n\n'
+              '1. `SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb`를 Colab A100에서 엽니다.\n'
+              '2. Drive의 `versions/v0.26.7`과 `runtime-assets/v0.26.7`에 승인 산출물을 배치합니다.\n'
+              '3. 셀을 위에서부터 실행합니다. 생성 LLM과 검증 LLM은 동일 Gemma 4 엔진을 공유합니다.\n'
+              '4. 검증은 심사의견 claim에만 적용되며 자유대화에는 적용되지 않습니다.\n',
+              encoding='utf-8'
+          )
+
+          # README operating notebook pointer.
+          readme = root/'README.md'
+          r = readme.read_text(encoding='utf-8')
+          r = r.replace('SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb', target.name)
+          readme.write_text(r, encoding='utf-8')
+
+          # Write release metadata for the artifact package.
+          out = root/'release-v0.26.7'; out.mkdir(exist_ok=True)
+          for src in [wheel, target, manifest_path, docs/'VALIDATION_v0.26.7.md', docs/'COLAB_ONE_CLICK_v0.26.7.md']:
+              (out/src.name).write_bytes(src.read_bytes())
+          PY
+
+      - name: Re-run tests against final release tree
+        run: |
+          pytest -q
+          python -m compileall -q src tests
+
+      - name: Commit v0.26.7 release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src pyproject.toml CHANGELOG.md README.md tests/test_v0267_llm_verifier.py \
+            notebooks/SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb \
+            notebooks/SemanticPromptTransfer_v0.26.7_COLAB_ASSETS.json \
+            docs/VALIDATION_v0.26.7.md docs/COLAB_ONE_CLICK_v0.26.7.md
+          git commit -m 'Release v0.26.7 with active LLM verifier'
+          git push origin HEAD:main
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SemanticPromptTransfer-v0.26.7-release
+          path: release-v0.26.7/
+          if-no-files-found: error
