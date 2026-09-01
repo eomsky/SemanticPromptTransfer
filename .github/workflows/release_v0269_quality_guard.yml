@@ -21,7 +21,9 @@ jobs:
           python-version: '3.12'
 
       - name: Patch v0.26.9
-        run: python tools/patch_v0269_quality_guard.py
+        run: |
+          python tools/patch_v0269_quality_guard.py
+          python tools/patch_v0269_regression_adjustments.py
 
       - name: Install and validate
         run: |
