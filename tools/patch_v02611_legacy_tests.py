@@ -15,5 +15,9 @@ text = text.replace(
     '        assert all(row["status"] == "UPLOADED" for row in rows)\n',
     '        assert all(row["status"] in {"VALIDATING", "PARSING", "INDEXING", "READY", "EXCLUDED"} for row in rows)\n',
 )
+text = text.replace(
+    '        assert all(row["progress_percent"] == 0 for row in rows)\n',
+    '        assert all(0 <= int(row["progress_percent"]) <= 100 for row in rows)\n',
+)
 path.write_text(text, encoding='utf-8')
 print('v0.26.11 legacy expectations updated')
