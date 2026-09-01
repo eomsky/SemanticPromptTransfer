@@ -1,0 +1,60 @@
+name: Release v0.26.11 performance rendering
+
+on:
+  push:
+    paths:
+      - '.github/workflows/release_v02611_perf_render.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Patch v0.26.11 quality and performance
+        run: python tools/patch_v02611_perf_render.py
+
+      - name: Install and validate source tree
+        run: |
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -e '.[poc]' pytest build >/dev/null
+          pytest -q
+          python -m compileall -q src tests
+          python -c "import semantic_prompt_transfer as spt; assert spt.__version__ == '0.26.11'; assert not hasattr(spt,'FallbackGenerator')"
+          python -c "import json; from pathlib import Path; nb=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.11_COLAB_LAUNCHER.ipynb').read_text()); [compile(''.join(c.get('source',[])),f'cell-{i}','exec') for i,c in enumerate(nb['cells']) if c.get('cell_type')=='code']"
+          python -c "from pathlib import Path; t=Path('notebooks/SemanticPromptTransfer_v0.26.11_COLAB_LAUNCHER.ipynb').read_text(); assert 'MODEL_CONTEXT_TOKENS = 28672' in t; assert 'max_new_tokens=3600' in t; assert '\"--max-num-seqs\", \"2\"' in t; assert '136,281' in t; assert '500,000, 2024년 575,000' not in t"
+          python -c "from semantic_prompt_transfer.review import _sanitize_style_text; s=_sanitize_style_text('2025년 123,456백만원'); assert '[VALUE]' not in s and '[PERIOD]' not in s"
+
+      - name: Build wheel and release assets
+        run: |
+          rm -rf dist release_v02611
+          python -m build --wheel >/dev/null
+          python tools/build_v02611_release.py
+
+      - name: Revalidate final release tree
+        run: |
+          pytest -q
+          python -m compileall -q src tests
+          python -c "from pathlib import Path; assert 'class FallbackGenerator' not in Path('src/semantic_prompt_transfer/llm.py').read_text()"
+
+      - name: Commit validated v0.26.11
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src tests pyproject.toml CHANGELOG.md notebooks/SemanticPromptTransfer_v0.26.11_COLAB_LAUNCHER.ipynb notebooks/SemanticPromptTransfer_v0.26.11_COLAB_ASSETS.json
+          git commit -m 'Release v0.26.11 performance and rendering stabilization'
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SemanticPromptTransfer-v0.26.11-release
+          path: release_v02611/*
