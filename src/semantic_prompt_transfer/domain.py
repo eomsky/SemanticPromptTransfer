@@ -253,6 +253,7 @@ class ReviewSectionDraft:
     text: str
     evidence_ids: tuple[str, ...]
     validation: dict[str, Any] = field(default_factory=dict)
+    evidence_refs: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -261,6 +262,7 @@ class ReviewSectionDraft:
             "text": self.text,
             "evidence_ids": list(self.evidence_ids),
             "validation": self.validation,
+            "evidence_refs": [dict(value) for value in self.evidence_refs],
         }
 
 

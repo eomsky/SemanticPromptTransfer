@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .chat_routing import ChatIntent, ChatIntentRouter
 from .colab_runtime import EphemeralColabRuntime
 from .config import DocumentScope
 from .domain import CaseContext, CreditFact, DocumentKind, FileStatus, JobStage, ReviewItem, ReviewSectionDraft
@@ -66,11 +67,15 @@ class EphemeralReviewJobService:
         self.industry_code = industry_code
         self.company_name = company_name
         self.capture_service = EvidenceCaptureService(runtime)
+        self.retriever = retriever
+        self.chat_router = ChatIntentRouter()
         self.orchestrator = ReviewGenerationOrchestrator(
             retriever,
             few_shots,
             registry=runtime.registry,
             llm=generator,
+            document_builder=OpinionDocumentBuilder(capture_service=self.capture_service),
+            verification_mode="OFF",
         )
         self._condition = threading.Condition(threading.RLock())
         self._events: dict[str, list[dict[str, Any]]] = {}
@@ -245,8 +250,17 @@ class EphemeralReviewJobService:
                     title=item.title,
                     text=text,
                     evidence_ids=cited,
+                    evidence_refs=list(validation.get("evidence_refs") or []),
                     validation=validation,
                 )
+
+            def on_claim(item: ReviewItem, payload: dict[str, Any]) -> None:
+                event = dict(payload); event_type = str(event.pop("type", "claim_complete"))
+                self._publish(job_id, event_type, review_item=item.value, **event)
+
+            def on_patch(item: ReviewItem, payload: dict[str, Any]) -> None:
+                event = dict(payload); event_type = str(event.pop("type", "claim_patch"))
+                self._publish(job_id, event_type, review_item=item.value, **event)
 
             output = self.runtime.review_output_path(job.tenant_id, job.case_id, job_id)
             try:
@@ -270,6 +284,8 @@ class EphemeralReviewJobService:
                 token_callback=on_token,
                 section_callback=on_section,
                 job_id=job_id,
+                claim_callback=on_claim,
+                patch_callback=on_patch,
             )
             with self._condition:
                 self._results[job_id] = result
@@ -392,56 +408,65 @@ class EphemeralReviewJobService:
 
     def _chat_messages(self, job_id: str, message: str) -> list[dict[str, str]]:
         self.assert_chat_ready(job_id)
+        intent = self.chat_router.route(message)
         with self._condition:
             result = self._results[job_id]
             history = [dict(row) for row in self._chat_history.get(job_id, [])]
             evidence_rows = list(self._evidence.get(job_id, {}).values())
+        job = self.runtime.registry.get_job(job_id)
 
-        opinion = "\n\n".join(
-            f"{section.review_item.value}. {section.review_item.title}\n"
-            f"{self._visible_text(section.text)}"
-            for section in result.sections
-        )
-        evidence_blocks: list[str] = []
-        evidence_characters = 0
-        for row in evidence_rows:
-            content = str(row.get("content") or "").strip()
-            if not content:
-                continue
-            block = (
-                f"자료: {row.get('source_filename') or '업로드 자료'}"
-                f" / 위치: {row.get('location') or row.get('page') or '-'}\n"
-                f"{content}"
+        if intent is ChatIntent.GENERAL:
+            system = (
+                "당신은 기업여신 업무를 지원하는 대화형 에이전트다. 자유대화에는 심사의견용 few-shot, "
+                "검증 LLM, repair/fallback 규칙을 적용하지 않는다. 일반 질문에는 업로드 자료의 근거를 "
+                "억지로 요구하지 말고 자연스럽고 완결된 답변을 한다. 사용자가 현재 심사건을 명시적으로 "
+                "지칭할 때에만 해당 건의 자료를 근거로 답한다."
             )
-            if evidence_characters + len(block) > 10000:
-                break
-            evidence_blocks.append(block)
-            evidence_characters += len(block)
+        elif intent is ChatIntent.CASE_QA:
+            blocks = []
+            try: facts = self.facts.load(job.tenant_id, job.case_id)
+            except Exception: facts = []
+            for fact in facts[:60]:
+                rendered = f"신용조사서 | {fact.field_name}={fact.value}"
+                if fact.unit: rendered += f" {fact.unit}"
+                if fact.period: rendered += f" | 기간={fact.period}"
+                blocks.append(rendered)
+            try:
+                retrieval = self.retriever.search(message, filters={"tenant_id": job.tenant_id, "case_id": job.case_id})
+            except Exception:
+                retrieval = {"hits": []}
+            for hit in retrieval.get("hits", [])[:12]:
+                metadata = dict(hit.get("metadata") or {})
+                pages = ','.join(str(v) for v in (metadata.get("pages") or [])) or '-'
+                blocks.append(f"첨부자료 | {metadata.get('source_filename') or '업로드 자료'} | 페이지={pages}\n{str(hit.get('document') or hit.get('embedding_text') or '')}")
+            context = "\n\n".join(blocks)[:18000]
+            system = (
+                "당신은 현재 심사건을 질의응답하는 기업여신 심사지원 에이전트다. 이 경로에는 검증 LLM을 "
+                "연결하지 않는다. 아래 자료는 사용자의 현재 질문으로 새로 검색한 query-time RAG 결과다. "
+                "자료가 뒷받침하는 내용은 구체적으로 답하고 자료에 없는 사실을 지어내지 않는다. 내부 근거 키는 출력하지 않는다.\n\n"
+                "[현재 질문 기반 심사건 자료]\n" + (context or "관련 자료가 검색되지 않음")
+            )
+        else:
+            opinion = "\n\n".join(f"{section.review_item.value}. {section.review_item.title}\n{self._visible_text(section.text)}" for section in result.sections)
+            evidence_blocks = []; used = 0
+            for row in evidence_rows:
+                content = str(row.get("content") or "").strip()
+                if not content: continue
+                block = f"자료: {row.get('source_filename') or '업로드 자료'} / 위치: {row.get('location') or row.get('page') or '-'}\n{content}"
+                if used + len(block) > 12000: break
+                evidence_blocks.append(block); used += len(block)
+            system = (
+                "당신은 이미 생성된 심사의견을 설명하는 기업여신 심사지원 에이전트다. 자유대화에는 검증 LLM, "
+                "few-shot, 심사의견 생성 repair를 적용하지 않는다. 아래 완료 의견과 그 생성 과정의 근거를 사용해 "
+                "사용자가 묻는 판단 이유나 근거를 설명한다. 내부 근거 키는 출력하지 않는다.\n\n[완료된 심사의견]\n"
+                + opinion + "\n\n[관련 근거]\n" + ("\n\n".join(evidence_blocks) if evidence_blocks else "별도 근거자료 없음")
+            )
 
-        system = (
-            "당신은 기업여신 검토를 지원하는 '심사지원 에이전트'다. "
-            "심사의견 생성 이후의 자유로운 후속 대화이므로 심사항목 A-E 형식, "
-            "few-shot 문체 예시, 심사의견 생성용 검증 절차를 적용하지 않는다. "
-            "사용자의 질문과 요청에 자연스럽게 답하라. 심사건의 사실을 말할 때에는 "
-            "아래 심사의견과 업로드 근거자료를 우선 사용하고, 근거에 없는 수치는 만들어내지 마라. "
-            "내부 근거 키(CR_, ATT_)는 화면에 출력하지 마라. "
-            "답변은 마지막 문장까지 완결하고 토큰 한도에서 문장을 중단하지 마라.\n\n"
-            "[완료된 심사의견]\n"
-            + opinion
-            + "\n\n[업로드 근거자료]\n"
-            + ("\n\n".join(evidence_blocks) if evidence_blocks else "별도 근거자료 없음")
-        )
-
-        # The UI has no turn limit. Only the request context is bounded so the
-        # vLLM call remains inside the configured model context window.
-        selected: list[dict[str, str]] = []
-        used = 0
+        selected = []; used_history = 0
         for row in reversed(history):
             size = len(row.get("content", ""))
-            if used + size > 14000:
-                break
-            selected.append(row)
-            used += size
+            if used_history + size > 14000: break
+            selected.append(row); used_history += size
         selected.reverse()
         return [{"role": "system", "content": system}, *selected, {"role": "user", "content": message}]
 
@@ -460,7 +485,7 @@ class EphemeralReviewJobService:
                 self._chat_history.setdefault(job_id, []).append(
                     {"role": "user", "content": prompt}
                 )
-            yield {"type": "chat_start", "agent": "심사지원 에이전트"}
+            yield {"type": "chat_start", "agent": "심사지원 에이전트", "intent": self.chat_router.route(prompt).value}
             pieces: list[str] = []
             try:
                 stream = getattr(self.generator, "stream", None)
@@ -488,7 +513,7 @@ class EphemeralReviewJobService:
                         })
                     except Exception:
                         pass
-                answer = "현재 완료된 심사의견과 확인된 근거자료 범위에서 답변을 이어가겠습니다. 요청사항은 추가 자료 확인이 필요한 부분을 구분하여 검토해야 합니다."
+                answer = "응답 생성이 일시적으로 중단되었습니다. 같은 질문을 다시 보내 주시면 이어서 답변하겠습니다."
                 yield {"type": "chat_token", "token": answer}
             with self._condition:
                 self._chat_history.setdefault(job_id, []).append(

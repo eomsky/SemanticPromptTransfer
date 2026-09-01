@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from .domain import CaseContext, CreditFact, EvidenceRecord, FewShotExample, ReviewItem, SourceTier
+from .evidence_trace import visual_group_key
 from .identity import evidence_id
 
 
@@ -260,51 +261,48 @@ class ReviewPromptBuilder:
             int(self.max_context_chars * self.credit_report_min_share),
         ) if credit else 0
 
-        selected: list[tuple[float, EvidenceRecord, str]] = []
-        chosen: set[str] = set()
+        def novelty_order(entries, initially_seen=None):
+            seen = set(initially_seen or ())
+            unique, repeats = [], []
+            for entry in entries:
+                key = visual_group_key(entry[1])
+                if key in seen:
+                    repeats.append(entry)
+                else:
+                    unique.append(entry); seen.add(key)
+            return unique + repeats
+
+        selected = []
+        chosen = set()
+        seen_groups = set()
         used = 0
         credit_used = 0
-
-        # Requirement 18: if credit-report representation would be below one half,
-        # backfill the closest credit-report rows/chunks until the half-context floor
-        # is reached or the available credit report is exhausted.
-        for entry in credit:
-            if credit_used >= target_credit:
-                break
+        for entry in novelty_order(credit):
+            if credit_used >= target_credit: break
             size = len(entry[2])
-            if used + size > self.max_context_chars:
-                continue
-            selected.append(entry)
-            chosen.add(entry[1].evidence_id)
-            used += size
-            credit_used += size
+            if used + size > self.max_context_chars: continue
+            selected.append(entry); chosen.add(entry[1].evidence_id)
+            seen_groups.add(visual_group_key(entry[1])); used += size; credit_used += size
 
-        for entry in ranked:
-            if entry[1].evidence_id in chosen:
-                continue
+        remaining = [entry for entry in ranked if entry[1].evidence_id not in chosen]
+        for entry in novelty_order(remaining, seen_groups):
             size = len(entry[2])
-            if used + size > self.max_context_chars:
-                continue
-            selected.append(entry)
-            chosen.add(entry[1].evidence_id)
-            used += size
-            if entry[1].source_class == "credit_report":
-                credit_used += size
+            if used + size > self.max_context_chars: continue
+            selected.append(entry); chosen.add(entry[1].evidence_id)
+            seen_groups.add(visual_group_key(entry[1])); used += size
+            if entry[1].source_class == "credit_report": credit_used += size
 
-        # Preserve relevance order in the actual prompt after satisfying the coverage floor.
         selected.sort(key=lambda value: (-value[0], value[1].evidence_id))
         rows = [entry[1] for entry in selected]
         attachment_used = sum(len(entry[2]) for entry in selected if entry[1].source_class == "attachment")
         return rows, {
             "context_characters": used,
-            "evidence_characters_by_source": {
-                "credit_report": credit_used,
-                "attachment": attachment_used,
-            },
+            "evidence_characters_by_source": {"credit_report": credit_used, "attachment": attachment_used},
             "credit_report_minimum_context_share": self.credit_report_min_share,
             "credit_report_target_characters": target_credit,
             "credit_report_floor_satisfied": credit_used >= target_credit,
             "credit_report_available_characters": sum(len(entry[2]) for entry in credit),
+            "unique_visual_evidence_groups": len({visual_group_key(entry[1]) for entry in selected}),
         }
 
     def build(

@@ -101,27 +101,37 @@ class EvidenceCaptureService:
                 raise ValueError("evidence page is outside the PDF")
             page = document[page_number - 1]
             raw_bbox = metadata.get("bbox")
-            if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) == 4:
-                bbox = fitz.Rect(*(float(value) for value in raw_bbox))
+            bbox = fitz.Rect(*(float(v) for v in raw_bbox)) if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) == 4 else None
+            boxes = []
+            for value in metadata.get("highlight_bboxes") or []:
+                if isinstance(value, (list, tuple)) and len(value) == 4:
+                    boxes.append(fitz.Rect(*(float(x) for x in value)))
+            if bbox is not None and not boxes: boxes = [bbox]
+
+            if bbox is None:
+                clip = page.rect
+            elif metadata.get("logical_table_id"):
+                clip = fitz.Rect(
+                    page.rect.x0 + 16.0, max(page.rect.y0, bbox.y0 - max(110.0, page.rect.height * 0.24)),
+                    page.rect.x1 - 16.0, min(page.rect.y1, bbox.y1 + max(75.0, page.rect.height * 0.15)),
+                )
             else:
-                bbox = page.rect
-            margin = 28.0
-            clip = fitz.Rect(
-                max(page.rect.x0, bbox.x0 - margin),
-                max(page.rect.y0, bbox.y0 - margin),
-                min(page.rect.x1, bbox.x1 + margin),
-                min(page.rect.y1, bbox.y1 + margin),
-            )
-            matrix = fitz.Matrix(2.0, 2.0)
-            pixmap = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
+                desired_width = max(bbox.width + 180.0, page.rect.width * 0.78)
+                center = (bbox.x0 + bbox.x1) / 2
+                x0 = max(page.rect.x0, center - desired_width / 2); x1 = min(page.rect.x1, center + desired_width / 2)
+                if x1 - x0 < desired_width: x0 = max(page.rect.x0, x1 - desired_width)
+                pad_y = max(90.0, bbox.height * 2.5)
+                clip = fitz.Rect(x0, max(page.rect.y0, bbox.y0 - pad_y), x1, min(page.rect.y1, bbox.y1 + pad_y))
+
+            scale = 1.45
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
             image = Image.open(io.BytesIO(pixmap.tobytes("png"))).convert("RGB")
-            draw = ImageDraw.Draw(image, "RGBA")
-            if bbox != page.rect:
-                left = max(0, int((bbox.x0 - clip.x0) * 2))
-                top = max(0, int((bbox.y0 - clip.y0) * 2))
-                right = min(image.width - 1, int((bbox.x1 - clip.x0) * 2))
-                bottom = min(image.height - 1, int((bbox.y1 - clip.y0) * 2))
-                draw.rectangle((left, top, right, bottom), fill=(255, 213, 0, 55), outline=(255, 160, 0, 255), width=6)
+            overlay = ImageDraw.Draw(image, "RGBA")
+            for box in boxes:
+                left = max(0, int((box.x0 - clip.x0) * scale)); top = max(0, int((box.y0 - clip.y0) * scale))
+                right = min(image.width - 1, int((box.x1 - clip.x0) * scale)); bottom = min(image.height - 1, int((box.y1 - clip.y0) * scale))
+                if right > left and bottom > top:
+                    overlay.rectangle((left, top, right, bottom), fill=(255, 213, 0, 48), outline=(255, 150, 0, 255), width=4)
             return self._png(image)
         finally:
             document.close()
@@ -144,11 +154,23 @@ class EvidenceCaptureService:
             if cell_range.startswith("ROW:"):
                 row_number = max(1, int(cell_range.split(":", 1)[1]))
                 cell_range = f"A{row_number}:{get_column_letter(min(max(1, sheet.max_column), 12))}{row_number}"
-            min_col, min_row, max_col, max_row = range_boundaries(cell_range)
-            first_row = max(1, min_row - 3)
-            last_row = min(sheet.max_row, max_row + 3)
-            first_col = max(1, min_col - 1)
-            last_col = min(sheet.max_column, max(max_col + 1, first_col + 3))
+            highlight_ranges = [cell_range]
+            for extra in metadata.get("highlight_cell_ranges") or []:
+                value = str(extra or "").strip()
+                if value and value not in highlight_ranges and not value.startswith("ROW:"):
+                    highlight_ranges.append(value)
+            bounds = [range_boundaries(value) for value in highlight_ranges]
+            min_col = min(value[0] for value in bounds); min_row = min(value[1] for value in bounds)
+            max_col = max(value[2] for value in bounds); max_row = max(value[3] for value in bounds)
+            first_row = max(1, min_row - 10)
+            for candidate in range(min_row - 1, first_row - 1, -1):
+                values = [sheet.cell(candidate, c).value for c in range(max(1, min_col - 2), min(sheet.max_column, max_col + 2) + 1)]
+                nonempty = [value for value in values if value not in (None, "")]
+                if len(nonempty) >= 2 and any(isinstance(value, str) for value in nonempty):
+                    first_row = candidate
+            last_row = min(sheet.max_row, max_row + 5)
+            first_col = 1 if sheet.max_column <= 14 else max(1, min_col - 3)
+            last_col = min(sheet.max_column, max(max_col + 3, first_col + 8))
             scale = 2
             row_header = 48 * scale
             column_header = 28 * scale
@@ -238,8 +260,9 @@ class EvidenceCaptureService:
                     x1 = x_edges[end_col - first_col + 1]
                     y1 = y_edges[end_row - first_row + 1]
                     draw.rectangle((x0, y0, x1, y1), fill=color_of(cell, "#ffffff"), outline="#b5bdc7", width=1 * scale)
-                    highlighted = not (
-                        end_row < min_row or row_number > max_row or end_col < min_col or col_number > max_col
+                    highlighted = any(
+                        not (end_row < b[1] or row_number > b[3] or end_col < b[0] or col_number > b[2])
+                        for b in bounds
                     )
                     if highlighted:
                         overlay.rectangle((x0, y0, x1, y1), fill=(255, 219, 72, 72), outline=(255, 153, 0, 255), width=3 * scale)

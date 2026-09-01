@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26.6 - 2026-09-01
+
+- Replaced destructive rule-validation generation gate with OFF/SHADOW/ENFORCE verification lanes; OFF is default.
+- Added claim segmentation, verifier-only findings, minimal-scope repair, patch guard, and streamed claim_patch events.
+- Separated free chat into GENERAL / CASE_QA / OPINION_QA; CASE_QA now performs query-time RAG and chat never invokes the verifier.
+- Added human evidence trace ledger, same-screen clustering, retrieval diversity preference, numbered evidence references, and DOCX evidence appendix with source captures.
+- Changed PDF/XLSX evidence capture to context-first views with wider table/header context and highlighted source spans.
+- Simplified Word header to case id only; removed loan type, industry classification, and target-company rows pending later redesign.
+- Preserved the v0.26.5 few-shot structure while carrying forward the refreshed image-grounded FEW_SHOT_1.
+
 ## 0.26.5 - 2026-09-01
 
 - Added per-anonymous-case preload of ABC기업 credit-report and business-report demo files from owner Drive.
