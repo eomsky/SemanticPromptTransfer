@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .chat_routing import ChatIntent, ChatIntentRouter
+from .credit_reasoning import CreditReasoningLayer
 from .colab_runtime import EphemeralColabRuntime
 from .config import DocumentScope
 from .domain import CaseContext, CreditFact, DocumentKind, FileStatus, JobStage, ReviewItem, ReviewSectionDraft
@@ -17,6 +18,7 @@ from .fewshot import FewShotSelector
 from .llm import TextGenerator
 from .orchestration import ReviewGenerationOrchestrator, ReviewGenerationResult
 from .poc_processing import PocUploadProcessor, ShardedAttachmentRetriever
+from .review import ReviewPromptBuilder
 from .review_docx import OpinionDocumentBuilder
 from .verification_flow import LLMVerificationAgent, VerificationMode
 
@@ -61,6 +63,9 @@ class EphemeralReviewJobService:
         company_name: str | None = None,
         verification_mode: VerificationMode | str = VerificationMode.OFF,
         verification_generator: TextGenerator | None = None,
+        reasoning_generator: TextGenerator | None = None,
+        completion_generator: TextGenerator | None = None,
+        prompt_builder: ReviewPromptBuilder | None = None,
     ) -> None:
         self.runtime = runtime
         self.facts = PocCreditFactRepository(runtime)
@@ -74,14 +79,18 @@ class EphemeralReviewJobService:
         self.chat_router = ChatIntentRouter()
         mode = VerificationMode(str(getattr(verification_mode, "value", verification_mode)).upper())
         verifier = LLMVerificationAgent(verification_generator or generator) if mode is not VerificationMode.OFF else None
+        reasoner = CreditReasoningLayer(reasoning_generator or generator)
         self.orchestrator = ReviewGenerationOrchestrator(
             retriever,
             few_shots,
             registry=runtime.registry,
             llm=generator,
+            prompt_builder=prompt_builder,
             document_builder=OpinionDocumentBuilder(capture_service=self.capture_service),
             verification_mode=mode,
             verifier=verifier,
+            reasoner=reasoner,
+            completion_generator=completion_generator or generator,
         )
         self._condition = threading.Condition(threading.RLock())
         self._events: dict[str, list[dict[str, Any]]] = {}

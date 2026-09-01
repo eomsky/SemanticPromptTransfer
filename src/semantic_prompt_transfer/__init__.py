@@ -1,6 +1,7 @@
 from .chunking import PackageChunkBuilder, build_experimental_matrix
 from .config import ArtifactMode, DocumentScope, IndexWriteStrategy, PipelineConfig, RepresentationLevel
 from .credit_report import CreditFieldMapping, CreditReportParseResult, CreditReportParser, CreditReportTemplate
+from .credit_reasoning import CreditReasoningLayer, ReasoningPortfolio
 from .domain import (
     CaseContext,
     CreditFact,
@@ -35,6 +36,7 @@ from .operations import DocumentLifecycleService, OfflineIndexBuilder, OnlineRAG
 from .orchestration import ReviewGenerationOrchestrator, ReviewGenerationResult, ReviewValidationError
 from .pipeline import RAGPipeline
 from .prompting import PromptPackage, PromptPackageBuilder
+from .prompt_budget import PromptTokenBudgetManager, PromptBudgetSnapshot
 from .query_profiles import QueryProfileRegistry, ReviewQueryProfile, default_query_profiles
 from .registry import DocumentRecord, JobRecord, OperationalRegistry
 from .review import EvidenceAssembler, ReviewPromptBuilder, ReviewPromptPackage
@@ -63,6 +65,10 @@ from .vector_store import (
 from .web import ReviewJobStarter, UploadProcessor, create_fastapi_app
 
 __all__ = [
+    "PromptBudgetSnapshot",
+    "PromptTokenBudgetManager",
+    "ReasoningPortfolio",
+    "CreditReasoningLayer",
     "ArtifactMode",
     "ArtifactDeletionResult",
     "CaseContext",

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 from .domain import CaseContext, CreditFact, EvidenceRecord, JobStage, ProgressEvent, ReviewItem, ReviewSectionDraft
+from .credit_reasoning import CreditReasoningLayer
 from .evidence_trace import EvidenceTraceLedger
 from .fewshot import FewShotSelector
 from .llm import TextGenerator
@@ -81,6 +82,8 @@ class ReviewGenerationOrchestrator:
         verifier: VerificationAgent | None = None,
         max_auto_patches_per_section: int = 1,
         max_completion_attempts: int = 2,
+        reasoner: CreditReasoningLayer | None = None,
+        completion_generator: TextGenerator | None = None,
     ) -> None:
         self.attachment_retriever = attachment_retriever
         self.few_shot_selector = few_shot_selector
@@ -98,6 +101,8 @@ class ReviewGenerationOrchestrator:
         self.repair = RepairCoordinator(max_repair_attempts)
         self.max_auto_patches_per_section = max(0, int(max_auto_patches_per_section))
         self.max_completion_attempts = max(0, int(max_completion_attempts))
+        self.reasoner = reasoner or CreditReasoningLayer(None)
+        self.completion_generator = completion_generator
 
     def _audit(self, case: CaseContext, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if not self.registry:
@@ -192,7 +197,8 @@ class ReviewGenerationOrchestrator:
                 },
             ]
             try:
-                continuation = str(generator.generate(messages) or "").strip()
+                completion = self.completion_generator or generator
+                continuation = str(completion.generate(messages) or "").strip()
             except Exception as exc:
                 self._audit(case, job_id, "GENERATION_COMPLETION_ERROR", {
                     "item": item.value,
@@ -213,7 +219,29 @@ class ReviewGenerationOrchestrator:
             })
             if self._looks_complete(current):
                 break
-        return current.strip()
+        current = current.strip()
+        return current if self._looks_complete(current) else self._rollback_incomplete_tail(current)
+
+    @classmethod
+    def _rollback_incomplete_tail(cls, text: str) -> str:
+        value = str(text or "").rstrip()
+        if not value or cls._looks_complete(value):
+            return value
+        # Preserve a citation immediately following the last completed sentence.
+        last = max(value.rfind("."), value.rfind("!"), value.rfind("?"), value.rfind("。"))
+        if last >= 0:
+            prefix = value[: last + 1]
+            rest = value[last + 1 :]
+            cite = re.match(r"\s*(?:\[(?:CR|ATT)_[a-f0-9]{20}\]\s*)*", rest, flags=re.I)
+            return (prefix + (cite.group(0) if cite else "")).rstrip()
+        lines = [line.rstrip() for line in value.splitlines() if line.strip()]
+        kept = []
+        for line in lines:
+            if cls._looks_complete(line):
+                kept.append(line)
+            else:
+                break
+        return "\n".join(kept).strip() or value
 
     @staticmethod
     def _cited_ids(text: str, evidence: Sequence[EvidenceRecord]) -> tuple[str, ...]:
@@ -429,16 +457,12 @@ class ReviewGenerationOrchestrator:
 
         try:
             emit(JobStage.PRECHECK, 5, "입력자료와 심사범위를 확인했습니다.")
-            emit(JobStage.CREDIT_REPORT_LOAD, 20, "심사자료를 검토 대상으로 로드했습니다.")
-            emit(JobStage.ATTACHMENT_RETRIEVAL, 30, "항목별 관련 근거를 검색합니다.")
+            emit(JobStage.CREDIT_REPORT_LOAD, 18, "신용조사서와 첨부자료를 심사 근거로 로드했습니다.")
+            emit(JobStage.ATTACHMENT_RETRIEVAL, 26, "A~E 전체 관련 근거를 검색하고 중요도를 평가합니다.")
 
-            sections: list[ReviewSectionDraft] = []
-            trace = EvidenceTraceLedger()
-            evidence_catalog: dict[str, dict[str, Any]] = {}
-
+            prepared: dict[ReviewItem, tuple[str, list[EvidenceRecord], list[Any]]] = {}
+            evidence_by_item: dict[ReviewItem, list[EvidenceRecord]] = {}
             for index, item in enumerate(ReviewItem.ordered()):
-                base = 32 + index * 12
-                emit(JobStage.ITEM_GENERATION, base, f"{item.value}. {item.title} 생성 중 ({index + 1}/5)", item)
                 query = self.query_profiles.get(item).build(case)
                 try:
                     retrieval = self.attachment_retriever.search(
@@ -448,43 +472,46 @@ class ReviewGenerationOrchestrator:
                 except Exception as exc:
                     recovered_any = True
                     retrieval = {"query": query, "hits": [], "recovered": True}
-                    self._audit(
-                        case,
-                        job_id,
-                        "RETRIEVAL_RECOVERED",
-                        {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]},
-                    )
-
+                    self._audit(case, job_id, "RETRIEVAL_RECOVERED", {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]})
                 try:
                     evidence = self.evidence_assembler.assemble(item, credit_facts, retrieval)
                 except Exception as exc:
                     recovered_any = True
                     evidence = self.evidence_assembler.assemble(item, credit_facts, {"hits": []}) if credit_facts else []
-                    self._audit(
-                        case,
-                        job_id,
-                        "EVIDENCE_ASSEMBLY_RECOVERED",
-                        {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]},
-                    )
-
+                    self._audit(case, job_id, "EVIDENCE_ASSEMBLY_RECOVERED", {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]})
                 try:
-                    examples = self.few_shot_selector.select(
+                    examples = list(self.few_shot_selector.select(
                         item,
                         loan_type=case.loan_type,
                         industry_code=case.industry_code,
                         situation_tags=case.situation_tags,
-                    )
+                    ))
                 except Exception as exc:
                     recovered_any = True
                     examples = []
-                    self._audit(
-                        case,
-                        job_id,
-                        "FEW_SHOT_SELECTION_RECOVERED",
-                        {"item": item.value, "message": str(exc)[:1000]},
-                    )
+                    self._audit(case, job_id, "FEW_SHOT_SELECTION_RECOVERED", {"item": item.value, "message": str(exc)[:1000]})
+                prepared[item] = (query, evidence, examples)
+                evidence_by_item[item] = evidence
+                emit(JobStage.ATTACHMENT_RETRIEVAL, 27 + index * 2, f"{item.value}. 관련 근거 검색 완료", item)
 
-                prompt = self.prompt_builder.build(case, item, query, evidence, list(examples))
+            emit(JobStage.ATTACHMENT_RETRIEVAL, 38, "중요 이슈·위험·완화요인·상환영향 및 A~E 연계를 설계합니다.")
+            try:
+                portfolio = self.reasoner.plan(case, evidence_by_item)
+            except Exception as exc:
+                recovered_any = True
+                portfolio = CreditReasoningLayer(None).plan(case, evidence_by_item)
+                self._audit(case, job_id, "CREDIT_REASONING_RECOVERED", {"error_type": type(exc).__name__, "message": str(exc)[:1000]})
+
+            sections: list[ReviewSectionDraft] = []
+            trace = EvidenceTraceLedger()
+            evidence_catalog: dict[str, dict[str, Any]] = {}
+
+            for index, item in enumerate(ReviewItem.ordered()):
+                base = 40 + index * 11
+                emit(JobStage.ITEM_GENERATION, base, f"{item.value}. {item.title} 생성 중 ({index + 1}/5)", item)
+                query, evidence, examples = prepared[item]
+                blueprint = portfolio.item_blueprint(item)
+                prompt = self.prompt_builder.build(case, item, query, evidence, examples, reasoning_blueprint=blueprint)
                 prompts.append(prompt)
                 prompt_evidence = self._prompt_evidence(prompt, evidence)
                 for row in prompt_evidence:
@@ -511,17 +538,28 @@ class ReviewGenerationOrchestrator:
                 recovered_any = recovered_any or repaired
                 cited_ids = self._cited_ids(text, prompt_evidence)
                 refs = trace.register(item, prompt_evidence, cited_ids)
+                final_claims = self.segmenter.segment(item, text, [row.evidence_id for row in prompt_evidence])
+                claim_evidence_map = []
+                for claim in final_claims:
+                    ref_nos = []
+                    for eid in claim.evidence_ids:
+                        ref_no = trace.ref_no_for(eid)
+                        if ref_no is not None and ref_no not in ref_nos:
+                            ref_nos.append(ref_no)
+                    claim_evidence_map.append({"claim_id": claim.claim_id, "evidence_ids": list(claim.evidence_ids), "ref_nos": ref_nos})
                 meta = {
                     "valid": True,
                     "verification_mode": self.verification_mode.value,
                     "verification": verification,
                     "recovered": recovered,
                     "repaired": repaired,
+                    "evidence_rebound_after_patch": bool(repaired),
                     "cited_evidence_ids": list(cited_ids),
                     "evidence_refs": [ref.to_dict() for ref in refs],
+                    "claim_evidence_map": claim_evidence_map,
+                    "credit_reasoning": blueprint,
+                    "prompt_budget": dict(prompt.manifest),
                 }
-                # evidence_refs is a v0.26.6 field; the integration patch extends the
-                # dataclass while preserving the old constructor prefix for compatibility.
                 section = ReviewSectionDraft(
                     review_item=item,
                     text=text,
@@ -532,26 +570,14 @@ class ReviewGenerationOrchestrator:
                 sections.append(section)
                 if section_callback:
                     section_callback(item, text, prompt.evidence, meta)
-                emit(JobStage.ITEM_GENERATION, base + 10, f"{item.value}. {item.title} 생성 완료 ({index + 1}/5)", item)
+                emit(JobStage.ITEM_GENERATION, min(95, base + 9), f"{item.value}. {item.title} 생성 완료 ({index + 1}/5)", item)
 
-            # No rule-based cross-validation gate exists here. Verification, when enabled,
-            # has already been applied to individual claims only.
-            emit(JobStage.DOCX_RENDER, 98, "심사의견과 근거 부록 Word 파일을 생성합니다.")
+            emit(JobStage.DOCX_RENDER, 97, "심사의견과 근거 부록 Word 파일을 생성합니다.")
             try:
-                target = self.document_builder.build(
-                    case,
-                    sections,
-                    output_path,
-                    evidence_catalog=evidence_catalog,
-                )
+                target = self.document_builder.build(case, sections, output_path, evidence_catalog=evidence_catalog)
             except Exception as exc:
                 recovered_any = True
-                self._audit(
-                    case,
-                    job_id,
-                    "DOCX_RENDER_RECOVERED",
-                    {"error_type": type(exc).__name__, "message": str(exc)[:1000]},
-                )
+                self._audit(case, job_id, "DOCX_RENDER_RECOVERED", {"error_type": type(exc).__name__, "message": str(exc)[:1000]})
                 target = self.document_builder.build_minimal(case, sections, output_path)
 
             final_stage = JobStage.COMPLETE_WITH_WARNINGS if recovered_any else JobStage.COMPLETE

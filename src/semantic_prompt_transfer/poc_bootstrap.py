@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
+from typing import Callable
 
 from .colab_runtime import EphemeralColabConfig, EphemeralColabRuntime
 from .credit_report import CreditReportTemplate
@@ -18,6 +19,8 @@ from .llm import (
 from .poc_processing import PocUploadProcessor, ShardedAttachmentRetriever
 from .poc_identity import PocIdentityService
 from .poc_review import EphemeralReviewJobService
+from .prompt_budget import PromptTokenBudgetManager
+from .review import ReviewPromptBuilder
 from .web import create_fastapi_app
 
 
@@ -63,6 +66,13 @@ def build_colab_poc(
     require_content_root: bool = True,
     anonymous_access: bool = False,
     verification_mode: str = "OFF",
+    verification_generator: TextGenerator | None = None,
+    reasoning_generator: TextGenerator | None = None,
+    completion_generator: TextGenerator | None = None,
+    prompt_token_counter: Callable[[str], int] | None = None,
+    model_context_tokens: int = 28672,
+    generation_reserve_tokens: int = 3600,
+    completion_reserve_tokens: int = 700,
 ) -> ColabPocBundle:
     runtime = EphemeralColabRuntime(
         EphemeralColabConfig(
@@ -106,6 +116,14 @@ def build_colab_poc(
             credit_template=template,
         )
         retriever = ShardedAttachmentRetriever(embedding_encoder, runtime.vectors)
+        budget = PromptTokenBudgetManager(
+            max_model_tokens=model_context_tokens,
+            generation_reserve_tokens=generation_reserve_tokens,
+            completion_reserve_tokens=completion_reserve_tokens,
+            safety_margin_tokens=1200,
+            token_counter=prompt_token_counter,
+        )
+        prompt_builder = ReviewPromptBuilder(token_budget_manager=budget)
         review_jobs = EphemeralReviewJobService(
             runtime,
             retriever,
@@ -113,7 +131,10 @@ def build_colab_poc(
             text_generator,
             upload_processor,
             verification_mode=verification_mode,
-            verification_generator=primary_generator,
+            verification_generator=verification_generator or primary_generator,
+            reasoning_generator=reasoning_generator or primary_generator,
+            completion_generator=completion_generator or primary_generator,
+            prompt_builder=prompt_builder,
         )
         sessions = None if anonymous_access else PocIdentityService(
             runtime.root / "metadata" / "identity.sqlite",

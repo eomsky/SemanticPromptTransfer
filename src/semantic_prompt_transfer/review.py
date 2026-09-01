@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import dataclass, replace
@@ -8,6 +9,7 @@ from typing import Any, Iterable
 from .domain import CaseContext, CreditFact, EvidenceRecord, FewShotExample, ReviewItem, SourceTier
 from .evidence_trace import visual_group_key
 from .identity import evidence_id
+from .prompt_budget import PromptTokenBudgetManager
 
 
 _TOKEN = re.compile(r"[가-힣A-Za-z]{2,}")
@@ -260,38 +262,85 @@ class ReviewPromptPackage:
 
 
 class ReviewPromptBuilder:
-    """Source-neutral prompt builder with a credit-report minimum representation constraint."""
+    """Evidence-maximizing prompt builder with explicit credit-reasoning guidance."""
+
+    _OUTPUT_DEPTH = {
+        ReviewItem.MAJOR_ACCOUNTS: "핵심 이슈 4~6개를 선별하고 각 이슈를 2~4문장으로 충분히 분석",
+        ReviewItem.PROFITABILITY: "핵심 이슈 3~5개를 선별하고 각 이슈를 2~4문장으로 충분히 분석",
+        ReviewItem.FINANCIAL_STABILITY: "핵심 이슈 4~6개를 선별하고 각 이슈를 2~4문장으로 충분히 분석",
+        ReviewItem.CASH_FLOW: "핵심 이슈 4~6개를 선별하고 각 이슈를 2~4문장으로 충분히 분석",
+        ReviewItem.MAJOR_CUSTOMERS: "핵심 이슈 3~5개를 선별하고 각 이슈를 2~4문장으로 충분히 분석",
+    }
 
     def __init__(
         self,
         max_context_chars: int = 18000,
         *,
         credit_report_min_share: float = 0.50,
+        token_budget_manager: PromptTokenBudgetManager | None = None,
     ) -> None:
         self.max_context_chars = int(max_context_chars)
         self.credit_report_min_share = float(credit_report_min_share)
+        self.token_budget = token_budget_manager
         if self.max_context_chars < 1000:
             raise ValueError("max_context_chars must be at least 1000")
         if not 0.0 <= self.credit_report_min_share <= 1.0:
             raise ValueError("credit_report_min_share must be between 0 and 1")
 
     @staticmethod
-    def _block(row: EvidenceRecord) -> str:
+    def _legacy_block(row: EvidenceRecord) -> str:
         label = "CREDIT_REPORT" if row.source_class == "credit_report" else "ATTACHMENT"
         conflicts = ",".join(row.metadata.get("conflicts_with_credit_ids") or [])
         return (
-            f"[{label} EVIDENCE]\n"
-            f"source_class={row.source_class}\n"
-            f"evidence_id={row.evidence_id}\n"
-            f"document_id={row.document_id}\n"
-            f"source_filename={row.source_filename}\n"
-            f"page={row.page}\n"
-            f"direct_conflict_credit_ids={conflicts}\n"
-            f"content={row.content}"
+            f"[{label} EVIDENCE]\nsource_class={row.source_class}\n"
+            f"evidence_id={row.evidence_id}\ndocument_id={row.document_id}\n"
+            f"source_filename={row.source_filename}\npage={row.page}\n"
+            f"direct_conflict_credit_ids={conflicts}\ncontent={row.content}"
         )
 
-    def _ranked(self, query: str, evidence: list[EvidenceRecord]) -> list[tuple[float, EvidenceRecord, str]]:
-        ranked: list[tuple[float, EvidenceRecord, str]] = []
+    @staticmethod
+    def _compact_entry(row: EvidenceRecord) -> str:
+        conflicts = ",".join(row.metadata.get("conflicts_with_credit_ids") or [])
+        suffix = f" | direct_conflict_credit_ids={conflicts}" if conflicts else ""
+        return f"id={row.evidence_id}{suffix} | {row.content}"
+
+    @staticmethod
+    def _group_header(row: EvidenceRecord) -> str:
+        metadata = dict(row.metadata or {})
+        if row.source_class == "credit_report":
+            loc = f"{metadata.get('sheet_name') or '시트'}:{metadata.get('cell_range') or '범위'}"
+            return f"[CREDIT_REPORT_GROUP file={row.source_filename or 'credit.xlsx'} location={loc}]"
+        loc = metadata.get("logical_table_id") or metadata.get("source_location") or "region"
+        return f"[ATTACHMENT_GROUP file={row.source_filename or 'attachment'} page={row.page or '-'} region={loc}]"
+
+    def _render_grouped(self, rows: list[EvidenceRecord]) -> list[str]:
+        groups: dict[tuple[Any, ...], list[EvidenceRecord]] = {}
+        order: list[tuple[Any, ...]] = []
+        for row in rows:
+            key = visual_group_key(row)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(row)
+        blocks = []
+        for key in order:
+            members = groups[key]
+            blocks.append(self._group_header(members[0]) + "\n" + "\n".join(self._compact_entry(row) for row in members))
+        return blocks
+
+    def _ranked(
+        self,
+        query: str,
+        evidence: list[EvidenceRecord],
+        reasoning_blueprint: dict[str, Any] | None = None,
+    ) -> list[tuple[float, EvidenceRecord]]:
+        blueprint = reasoning_blueprint or {}
+        priority = {str(v) for v in blueprint.get("priority_evidence_ids") or []}
+        supporting = set()
+        for issue in blueprint.get("priority_issues") or []:
+            if isinstance(issue, dict):
+                supporting.update(str(v) for v in issue.get("evidence_ids") or [])
+        ranked: list[tuple[float, EvidenceRecord]] = []
         for row in evidence:
             lexical = _similarity(query, row.content)
             vector_score = row.metadata.get("score") if row.source_class == "attachment" else None
@@ -299,66 +348,118 @@ class ReviewPromptBuilder:
                 vector = max(-1.0, min(1.0, float(vector_score))) if vector_score is not None else 0.0
             except (TypeError, ValueError):
                 vector = 0.0
-            # No source-type bonus: both sources compete on query fit.  The separate
-            # credit-report floor below is a coverage constraint, not factual priority.
             score = lexical + max(0.0, vector) * 0.35
+            if row.evidence_id in priority:
+                score += 1.5
+            elif row.evidence_id in supporting:
+                score += 0.75
+            if row.metadata.get("conflicts_with_credit_ids") or row.metadata.get("conflicting_attachment_ids"):
+                score += 0.25
             metadata = dict(row.metadata)
             metadata["selection_score"] = round(score, 6)
-            ranked.append((score, replace(row, metadata=metadata), self._block(replace(row, metadata=metadata))))
+            ranked.append((score, replace(row, metadata=metadata)))
         ranked.sort(key=lambda value: (-value[0], value[1].evidence_id))
         return ranked
 
-    def _select(self, query: str, evidence: list[EvidenceRecord]) -> tuple[list[EvidenceRecord], dict[str, Any]]:
-        ranked = self._ranked(query, evidence)
+    @staticmethod
+    def _novelty_order(entries, initially_seen=None):
+        seen = set(initially_seen or ())
+        unique, repeats = [], []
+        for entry in entries:
+            key = visual_group_key(entry[1])
+            if key in seen:
+                repeats.append(entry)
+            else:
+                unique.append(entry)
+                seen.add(key)
+        return unique + repeats
+
+    def _select_legacy(self, query: str, evidence: list[EvidenceRecord], reasoning_blueprint=None):
+        ranked = [(s, row, self._legacy_block(row)) for s, row in self._ranked(query, evidence, reasoning_blueprint)]
         credit = [entry for entry in ranked if entry[1].source_class == "credit_report"]
         target_credit = min(
             sum(len(entry[2]) for entry in credit),
             int(self.max_context_chars * self.credit_report_min_share),
         ) if credit else 0
-
-        def novelty_order(entries, initially_seen=None):
-            seen = set(initially_seen or ())
-            unique, repeats = [], []
-            for entry in entries:
-                key = visual_group_key(entry[1])
-                if key in seen:
-                    repeats.append(entry)
-                else:
-                    unique.append(entry); seen.add(key)
-            return unique + repeats
-
-        selected = []
-        chosen = set()
-        seen_groups = set()
-        used = 0
-        credit_used = 0
-        for entry in novelty_order(credit):
-            if credit_used >= target_credit: break
+        selected, chosen, seen_groups = [], set(), set()
+        used = credit_used = 0
+        for entry in self._novelty_order(credit):
+            if credit_used >= target_credit:
+                break
             size = len(entry[2])
-            if used + size > self.max_context_chars: continue
+            if used + size > self.max_context_chars:
+                continue
             selected.append(entry); chosen.add(entry[1].evidence_id)
             seen_groups.add(visual_group_key(entry[1])); used += size; credit_used += size
-
         remaining = [entry for entry in ranked if entry[1].evidence_id not in chosen]
-        for entry in novelty_order(remaining, seen_groups):
+        for entry in self._novelty_order(remaining, seen_groups):
             size = len(entry[2])
-            if used + size > self.max_context_chars: continue
-            selected.append(entry); chosen.add(entry[1].evidence_id)
-            seen_groups.add(visual_group_key(entry[1])); used += size
-            if entry[1].source_class == "credit_report": credit_used += size
-
+            if used + size > self.max_context_chars:
+                continue
+            selected.append(entry); chosen.add(entry[1].evidence_id); used += size
+            if entry[1].source_class == "credit_report":
+                credit_used += size
         selected.sort(key=lambda value: (-value[0], value[1].evidence_id))
         rows = [entry[1] for entry in selected]
-        attachment_used = sum(len(entry[2]) for entry in selected if entry[1].source_class == "attachment")
         return rows, {
+            "selection_mode": "legacy_char_budget",
             "context_characters": used,
-            "evidence_characters_by_source": {"credit_report": credit_used, "attachment": attachment_used},
-            "credit_report_minimum_context_share": self.credit_report_min_share,
             "credit_report_target_characters": target_credit,
             "credit_report_floor_satisfied": credit_used >= target_credit,
-            "credit_report_available_characters": sum(len(entry[2]) for entry in credit),
-            "unique_visual_evidence_groups": len({visual_group_key(entry[1]) for entry in selected}),
+            "unique_visual_evidence_groups": len({visual_group_key(row) for row in rows}),
         }
+
+    def _select_tokens(
+        self,
+        query: str,
+        evidence: list[EvidenceRecord],
+        evidence_budget_tokens: int,
+        reasoning_blueprint: dict[str, Any] | None,
+    ):
+        assert self.token_budget is not None
+        ranked = self._ranked(query, evidence, reasoning_blueprint)
+        entries = [(score, row, self.token_budget.count_text(self._compact_entry(row)) + 10) for score, row in ranked]
+        credit = [entry for entry in entries if entry[1].source_class == "credit_report"]
+        available_credit = sum(entry[2] for entry in credit)
+        target_credit = min(available_credit, int(evidence_budget_tokens * self.credit_report_min_share)) if credit else 0
+        selected, chosen, seen_groups = [], set(), set()
+        used = credit_used = 0
+        for entry in self._novelty_order(credit):
+            if credit_used >= target_credit:
+                break
+            if used + entry[2] > evidence_budget_tokens:
+                continue
+            selected.append(entry); chosen.add(entry[1].evidence_id)
+            seen_groups.add(visual_group_key(entry[1])); used += entry[2]; credit_used += entry[2]
+        remaining = [entry for entry in entries if entry[1].evidence_id not in chosen]
+        for entry in self._novelty_order(remaining, seen_groups):
+            if used + entry[2] > evidence_budget_tokens:
+                continue
+            selected.append(entry); chosen.add(entry[1].evidence_id); used += entry[2]
+            if entry[1].source_class == "credit_report":
+                credit_used += entry[2]
+        selected.sort(key=lambda value: (-value[0], value[1].evidence_id))
+        rows = [entry[1] for entry in selected]
+        return rows, {
+            "selection_mode": "token_budget_materiality_diversity",
+            "evidence_budget_tokens": evidence_budget_tokens,
+            "evidence_tokens_used": used,
+            "credit_report_target_tokens": target_credit,
+            "credit_report_tokens_used": credit_used,
+            "credit_report_floor_satisfied": credit_used >= target_credit,
+            "unique_visual_evidence_groups": len({visual_group_key(row) for row in rows}),
+        }
+
+    @staticmethod
+    def _blueprint_text(value: dict[str, Any] | None) -> str:
+        if not value:
+            return "구조화 판단정보 없음"
+        compact = {
+            "judgment_focus": value.get("judgment_focus"),
+            "priority_issues": value.get("priority_issues") or [],
+            "cross_item_signals": value.get("cross_item_signals") or [],
+        }
+        return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
     def build(
         self,
@@ -367,55 +468,82 @@ class ReviewPromptBuilder:
         query: str,
         evidence: list[EvidenceRecord],
         few_shots: list[FewShotExample],
+        reasoning_blueprint: dict[str, Any] | None = None,
     ) -> ReviewPromptPackage:
         system = (
-            "현재 심사건에서 제공된 근거만 사실로 사용한다. 신용조사서와 기타 첨부자료는 "
-            "출처 종류만으로 상시 우선순위를 부여하지 않고 각각 독립 근거로 검토한다. "
-            "단, 동일 사실·동일 기준시점 또는 기간·동일 단위에 대해 두 출처가 직접 충돌할 때에만 "
-            "신용조사서 내용을 채택하고 차이가 있음을 명시한다. 기준시점이나 기간이 다르면 충돌로 "
-            "간주하지 말고 각 시점의 정보로 함께 활용한다. FEW SHOT은 수치·회사명·기간을 제거한 "
-            "문체와 분석 구조만 참고한다. 금액은 CURRENT_CASE_EVIDENCE에 표시된 정규화 단위를 그대로 사용한다. "
-            "심사의견 금액 단위는 백만원을 기본으로 하며 원·천원·만원으로 다시 바꾸거나 한 항목 안에서 혼용하지 않는다. "
-            "수치·부호·기간을 임의 계산하지 않는다. 각 핵심 주장 문장 끝에는 제공된 [evidence_id]를 붙이고 "
-            "존재하지 않는 근거 ID를 만들지 않는다."
+            "현재 심사건에서 제공된 근거만 사실로 사용한다. 신용조사서와 기타 첨부자료는 출처 종류만으로 상시 우선순위를 부여하지 않고 독립 근거로 검토한다. "
+            "동일 사실·동일 기간·동일 단위가 직접 충돌할 때에만 신용조사서 내용을 채택한다. FEW SHOT은 사실이 아니라 심사역의 표현·분석 구조만 참고한다. "
+            "CREDIT_REASONING_BLUEPRINT의 중요도와 항목 간 연계를 우선 반영한다. 단순 사실 나열에 그치지 말고 각 핵심 이슈에서 사실→의미→위험→완화요인→상환능력 영향→향후 관찰변수를 연결한다. "
+            "자료에 없는 원인은 만들지 않는다. 금액은 CURRENT_CASE_EVIDENCE의 정규화 단위를 사용하고 한 비교축에서 단위를 혼용하지 않는다. "
+            "각 핵심 주장에는 제공된 evidence_id를 붙이며 존재하지 않는 ID를 만들지 않는다."
         )
-        example_blocks: list[str] = []
+        blueprint_text = self._blueprint_text(reasoning_blueprint)
+        depth = self._OUTPUT_DEPTH[review_item]
+        fixed_prefix = (
+            f"심사건: case={case.case_id}\n심사항목: {review_item.value}. {review_item.title}\n\n"
+            f"[QUERY_PROFILE]\n{query}\n\n[CREDIT_REASONING_BLUEPRINT]\n{blueprint_text}\n\n"
+        )
+        writing = (
+            "\n\n[작성요청]\n심사역 관점에서 중요도가 높은 내용을 우선한다. " + depth + ". "
+            "LOW 중요도 사실은 핵심 판단을 설명하는 데 필요할 때만 사용한다. 위험요인만 나열하지 말고 확인 가능한 완화요인과 상환재원 영향을 함께 비교한다. "
+            "손익과 현금흐름, 운전자본과 차입금, 차입금과 자본완충, 매출처와 외형 안정성처럼 관련 항목을 연결한다. "
+            "현재보다 충분히 상세하게 작성하되 반복은 피하고 최종 심사의견만 출력한다. 마지막 문장은 반드시 완결한다."
+        )
+        style_candidates = []
         for example in few_shots:
-            example_blocks.append(
-                f"[STYLE_ONLY_FEW_SHOT {example.example_id}]\n"
-                f"입력상황: {_sanitize_style_text(example.input_summary, example.forbidden_tokens)}\n"
-                f"작성예시: {_sanitize_style_text(example.output_example, example.forbidden_tokens)}\n"
-                "주의: placeholder와 문체·논리 구조만 참고하며 원래 사실은 제공되지 않는다."
+            summary = _sanitize_style_text(example.input_summary, example.forbidden_tokens)
+            output = _sanitize_style_text(example.output_example, example.forbidden_tokens)
+            if self.token_budget is not None:
+                summary = summary[:480]
+            style_candidates.append(
+                f"[STYLE_ONLY_FEW_SHOT {example.example_id}]\n입력맥락: {summary}\n작성예시: {output}\n주의: 사실은 전이하지 않는다."
             )
 
-        kept_evidence, selection = self._select(query, evidence)
-        evidence_blocks = [self._block(row) for row in kept_evidence]
-        user = (
-            f"심사건: tenant={case.tenant_id}, case={case.case_id}\n"
-            f"여신유형: {case.loan_type}\n"
-            f"산업분류: {case.industry_code}\n"
-            f"심사항목: {review_item.value}. {review_item.title}\n\n"
-            f"[QUERY_PROFILE]\n{query}\n\n"
-            "[FEW_SHOT_STYLE_ONLY]\n"
-            + ("\n\n".join(example_blocks) if example_blocks else "선택된 예시 없음")
-            + "\n\n[CURRENT_CASE_EVIDENCE]\n"
-            + ("\n\n".join(evidence_blocks) if evidence_blocks else "현재 근거 없음")
-            + "\n\n[작성요청]\n현황, 주요 원인, 위험·완화요인 및 향후전망을 근거 중심으로 작성하라. "
-            "서로 보완되는 신용조사서와 첨부자료는 함께 사용하되 불필요한 출처 우열을 만들지 마라. "
-            "direct_conflict_credit_ids가 표시된 첨부근거와 해당 신용조사서가 같은 사실에서 충돌하면 "
-            "신용조사서를 채택하라. 각 핵심 문장 끝에는 반드시 [CR_…] 또는 [ATT_…] 근거를 붙이고 "
-            "최종 심사의견만 출력하라. 마지막 문장은 반드시 완결하라."
-        )
+        selection: dict[str, Any]
+        if self.token_budget is None:
+            kept_style = style_candidates
+            kept_evidence, selection = self._select_legacy(query, evidence, reasoning_blueprint)
+            evidence_blocks = [self._legacy_block(row) for row in kept_evidence]
+            user = fixed_prefix + "[FEW_SHOT_STYLE_ONLY]\n" + ("\n\n".join(kept_style) if kept_style else "선택된 예시 없음") + "\n\n[CURRENT_CASE_EVIDENCE]\n" + ("\n\n".join(evidence_blocks) if evidence_blocks else "현재 근거 없음") + writing
+            budget_info = {"token_budget_enabled": False}
+        else:
+            input_budget = self.token_budget.input_budget_tokens
+            style_cap = min(4200, max(900, int(input_budget * 0.22)))
+            kept_style, style_tokens = [], 0
+            for block in style_candidates:
+                cost = self.token_budget.count_text(block) + 8
+                if kept_style and style_tokens + cost > style_cap:
+                    continue
+                if style_tokens + cost > style_cap and kept_style:
+                    continue
+                kept_style.append(block); style_tokens += cost
+            if not kept_style and style_candidates:
+                kept_style = [style_candidates[0]]
+                style_tokens = self.token_budget.count_text(style_candidates[0]) + 8
+            fixed_tokens = self.token_budget.count_text(system + fixed_prefix + writing) + style_tokens + 80
+            evidence_budget = max(700, input_budget - fixed_tokens)
+            kept_evidence, selection = self._select_tokens(query, evidence, evidence_budget, reasoning_blueprint)
+            while True:
+                evidence_blocks = self._render_grouped(kept_evidence)
+                user = fixed_prefix + "[FEW_SHOT_STYLE_ONLY]\n" + ("\n\n".join(kept_style) if kept_style else "선택된 예시 없음") + "\n\n[CURRENT_CASE_EVIDENCE]\n" + ("\n\n".join(evidence_blocks) if evidence_blocks else "현재 근거 없음") + writing
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+                if self.token_budget.fits(messages) or len(kept_evidence) <= 1:
+                    break
+                kept_evidence.pop()
+            snap = self.token_budget.snapshot(messages)
+            budget_info = {"token_budget_enabled": True, **snap.to_dict(), "style_tokens": style_tokens}
+
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         conflicts = {
             row.evidence_id: list(row.metadata.get("conflicts_with_credit_ids") or [])
-            for row in kept_evidence
-            if row.metadata.get("conflicts_with_credit_ids")
+            for row in kept_evidence if row.metadata.get("conflicts_with_credit_ids")
         }
+        priority_ids = list((reasoning_blueprint or {}).get("priority_evidence_ids") or [])
         return ReviewPromptPackage(
-            schema_version="review-prompt-1.1",
+            schema_version="review-prompt-2.0",
             review_item=review_item,
             query=query,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=messages,
             evidence=[row.to_dict() for row in kept_evidence],
             few_shots=[
                 {
@@ -428,20 +556,22 @@ class ReviewPromptBuilder:
                     "industry_codes": list(row.industry_codes),
                     "situation_tags": list(row.situation_tags),
                 }
-                for row in few_shots
+                for row in few_shots[: len(kept_style)]
             ],
             manifest={
                 "tenant_id": case.tenant_id,
                 "case_id": case.case_id,
-                "loan_type": case.loan_type,
-                "industry_code": case.industry_code,
                 "evidence_policy": "source_neutral_with_credit_report_direct_conflict_resolution",
                 "conflict_resolution": "credit_report_on_direct_conflict",
                 "few_shot_is_evidence": False,
-                "few_shot_sanitized": True,
-                **selection,
+                "reasoning_layer": "credit_reasoning_materiality_cross_item",
+                "priority_evidence_ids": priority_ids,
+                "selected_evidence_count": len(kept_evidence),
+                "available_evidence_count": len(evidence),
                 "credit_report_available": any(row.source_class == "credit_report" for row in kept_evidence),
                 "attachment_evidence_available": any(row.source_class == "attachment" for row in kept_evidence),
                 "direct_conflicts": conflicts,
+                **selection,
+                **budget_info,
             },
         )

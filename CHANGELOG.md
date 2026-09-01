@@ -1,3 +1,12 @@
+## 0.26.10 - 2026-09-01
+
+- Added a structured Credit Reasoning Layer for materiality, risk/mitigant, repayment impact, trend, forward triggers, and cross-item A-E signals.
+- Added model-tokenizer-aware prompt budgeting and compact evidence grouping so evidence fills the available input window without context overflow.
+- Expanded the operating Gemma context target to 28,672 tokens with two concurrent sequences and doubled the generation ceiling to 3,600 tokens.
+- Split one loaded Gemma/vLLM server into logical Generation, Reasoning, Verifier, and Completion clients with role-specific output limits.
+- Made verifier patch highlighting transient and rebound final claims to evidence references after a patch; permanent yellow claim backgrounds were removed.
+- Added fail-closed incomplete-tail rollback so a completed section cannot end with a dangling clause.
+
 ## 0.26.9 - 2026-09-01
 
 - Deleted FallbackGenerator from runtime, public exports, and tests.

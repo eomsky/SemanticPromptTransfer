@@ -12,4 +12,4 @@ def test_review_bootstrap_does_not_use_fallback_generator():
 
 def test_generation_and_verification_roles_are_separate():
     source = inspect.getsource(build_colab_poc)
-    assert "verification_generator=primary_generator" in source
+    assert "verification_generator=verification_generator or primary_generator" in source
