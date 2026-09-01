@@ -21,7 +21,9 @@ jobs:
           python-version: '3.12'
 
       - name: Patch v0.26.10 architecture
-        run: python tools/patch_v02610_credit_reasoning.py
+        run: |
+          python tools/patch_v02610_credit_reasoning.py
+          python tools/patch_v02610_regression_fix.py
 
       - name: Install and validate source tree
         run: |
