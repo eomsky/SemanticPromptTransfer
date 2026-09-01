@@ -24,6 +24,7 @@ jobs:
         run: |
           python tools/patch_v02611_perf_render.py
           python tools/patch_v02611_testfix.py
+          python tools/patch_v02611_legacy_tests.py
 
       - name: Install and validate source tree
         run: |
