@@ -1,0 +1,170 @@
+name: Release v0.26.8 direct streaming generation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/release_v0268_remove_generation_fallback.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Patch v0.26.8 direct generation path
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('.')
+
+          def replace(path, old, new, count=1):
+              p = root / path
+              text = p.read_text(encoding='utf-8')
+              if old not in text:
+                  raise RuntimeError(f'missing target in {path}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, count), encoding='utf-8')
+
+          # Review generation must talk directly to the primary LLM. The old FallbackGenerator
+          # performs a hidden semantic/grounding gate and can replace good prose with raw evidence.
+          replace(
+              'src/semantic_prompt_transfer/poc_bootstrap.py',
+              '    FallbackGenerator,\n',
+              '',
+          )
+          old = '''        primary_generator: TextGenerator | None = None\n        if generator is not None:\n            # Generation keeps technical fallback, while verification talks to the actual primary LLM.\n            primary_generator = generator\n            text_generator: TextGenerator = FallbackGenerator(generator, EvidenceTemplateGenerator())\n        elif llm_base_url:\n            primary_generator = OpenAICompatibleHttpGenerator(\n                RemoteGenerationConfig(\n                    base_url=llm_base_url,\n                    model=llm_model,\n                    api_key=llm_api_key,\n                )\n            )\n            text_generator = FallbackGenerator(primary_generator, EvidenceTemplateGenerator())\n        else:\n            text_generator = EvidenceTemplateGenerator()\n'''
+          new = '''        primary_generator: TextGenerator | None = None\n        if generator is not None:\n            # Review generation streams directly from the primary LLM. Semantic/factual checking\n            # belongs exclusively to the post-generation VerificationAgent.\n            primary_generator = generator\n            text_generator: TextGenerator = generator\n        elif llm_base_url:\n            primary_generator = OpenAICompatibleHttpGenerator(\n                RemoteGenerationConfig(\n                    base_url=llm_base_url,\n                    model=llm_model,\n                    api_key=llm_api_key,\n                )\n            )\n            text_generator = primary_generator\n        else:\n            # Offline/no-LLM compatibility only. The operating Colab always supplies a primary LLM.\n            text_generator = EvidenceTemplateGenerator()\n'''
+          replace('src/semantic_prompt_transfer/poc_bootstrap.py', old, new)
+
+          # Version sources.
+          replace('src/semantic_prompt_transfer/version.py', 'PACKAGE_VERSION = "0.26.7"', 'PACKAGE_VERSION = "0.26.8"')
+          replace('pyproject.toml', 'version = "0.26.7"', 'version = "0.26.8"')
+          p = root/'tests/test_package.py'
+          t = p.read_text(encoding='utf-8').replace('self.assertEqual(__version__, "0.26.7")', 'self.assertEqual(__version__, "0.26.8")')
+          p.write_text(t, encoding='utf-8')
+
+          # Regression test: operational bootstrap source must not wrap primary generation.
+          test = root/'tests/test_v0268_direct_generation.py'
+          test.write_text('''import inspect\n\nfrom semantic_prompt_transfer.poc_bootstrap import build_colab_poc\n\n\ndef test_review_bootstrap_does_not_use_fallback_generator():\n    source = inspect.getsource(build_colab_poc)\n    assert "FallbackGenerator(" not in source\n    assert "text_generator: TextGenerator = generator" in source\n    assert "text_generator = primary_generator" in source\n\n\ndef test_generation_and_verification_roles_are_separate():\n    source = inspect.getsource(build_colab_poc)\n    assert "verification_generator=primary_generator" in source\n''', encoding='utf-8')
+
+          # Changelog.
+          changelog = root/'CHANGELOG.md'
+          current = changelog.read_text(encoding='utf-8')
+          entry = '''## 0.26.8 - 2026-09-01\n\n- Removed FallbackGenerator and its hidden grounding precheck from the operational review-generation lane.\n- Gemma 4 now streams directly to the UI; technical failures are handled by the orchestrator retry path rather than by raw-evidence prose.\n- Kept the active claim-level LLM verifier and minimal PatchGuard repair from v0.26.7.\n- EvidenceTemplateGenerator is no longer reachable as an operating Colab review fallback when a primary LLM is configured.\n\n'''
+          if '## 0.26.8 - 2026-09-01' not in current:
+              changelog.write_text(entry + current, encoding='utf-8')
+
+          # Clone operating notebook to v0.26.8 and update only version identifiers.
+          src = root/'notebooks/SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb'
+          dst = root/'notebooks/SemanticPromptTransfer_v0.26.8_COLAB_LAUNCHER.ipynb'
+          notebook_text = src.read_text(encoding='utf-8')
+          notebook_text = notebook_text.replace('v0.26.7', 'v0.26.8').replace('0.26.7', '0.26.8').replace('v0267', 'v0268')
+          dst.write_text(notebook_text, encoding='utf-8')
+
+          print('v0.26.8 patch complete')
+          PY
+
+      - name: Install and validate
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -e '.[poc]' pytest build >/dev/null
+          pytest -q
+          python -m compileall -q src tests
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          nb = json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.8_COLAB_LAUNCHER.ipynb').read_text(encoding='utf-8'))
+          for i, cell in enumerate(nb['cells']):
+              if cell.get('cell_type') == 'code':
+                  compile(''.join(cell.get('source', [])), f'cell-{i}', 'exec')
+          text = Path('src/semantic_prompt_transfer/poc_bootstrap.py').read_text(encoding='utf-8')
+          assert 'FallbackGenerator(' not in text
+          assert 'verification_generator=primary_generator' in text
+          assert 'verification_mode=os.environ.get("SPT_VERIFICATION_MODE", "ENFORCE")' in text
+          code = Path('notebooks/SemanticPromptTransfer_v0.26.8_COLAB_LAUNCHER.ipynb').read_text(encoding='utf-8')
+          assert '136,281' in code and '500,000, 2024년 575,000' not in code
+          print('notebook and direct-generation checks passed')
+          PY
+
+      - name: Build wheel and release assets
+        shell: bash
+        run: |
+          rm -rf dist release_v0268
+          python -m build --wheel >/dev/null
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          root = Path('.')
+          out = root/'release_v0268'
+          out.mkdir()
+          wheel = next((root/'dist').glob('semantic_prompt_transfer-0.26.8-*.whl'))
+          launcher = root/'notebooks/SemanticPromptTransfer_v0.26.8_COLAB_LAUNCHER.ipynb'
+          target_wheel = out/wheel.name
+          target_launcher = out/launcher.name
+          target_wheel.write_bytes(wheel.read_bytes())
+          target_launcher.write_bytes(launcher.read_bytes())
+
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          manifest = {
+              'schema_version': 3,
+              'release': 'v0.26.8',
+              'package_version': '0.26.8',
+              'drive_root': '/content/drive/MyDrive/SemanticPromptTransfer',
+              'runtime_root': '/content/spt_poc_runtime',
+              'stage_root': '/content/spt_bootstrap_v0268',
+              'base_asset_manifest': 'runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json',
+              'assets': [{
+                  'role': 'wheel',
+                  'source': f'versions/v0.26.8/{target_wheel.name}',
+                  'target': f'release/{target_wheel.name}',
+                  'size': target_wheel.stat().st_size,
+                  'sha256': sha(target_wheel),
+              }],
+              'demo_assets': [
+                  {'role':'credit_report','source':'demo-assets/신용조사서_ABC기업_v1.0.xlsx','processing':'deferred_until_review'},
+                  {'role':'attachment','source':'demo-assets/[ABC기업]사업보고서(2026.03.23).pdf','processing':'deferred_until_review'},
+              ],
+          }
+          manifest_path = out/'SemanticPromptTransfer_v0.26.8_COLAB_ASSETS.json'
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+          (root/'notebooks/SemanticPromptTransfer_v0.26.8_COLAB_ASSETS.json').write_text(manifest_path.read_text(encoding='utf-8'), encoding='utf-8')
+
+          validation = f'''# SemanticPromptTransfer v0.26.8 검증 기록\n\n- 운영 심사의견 생성 lane에서 FallbackGenerator/grounding precheck 제거\n- Gemma 4 primary stream 직접 사용\n- 생성 오류는 orchestrator 재시도/기술복구로 처리, raw evidence 문구 fallback 금지\n- LLMVerificationAgent ENFORCE 유지\n- WARN/INSUFFICIENT_EVIDENCE는 문구 변경 없음\n- FAIL은 최소 span/claim PatchGuard 수정만 허용\n- 자유대화 verifier 미적용 유지\n- 전체 pytest / compileall / Colab code-cell compile 통과\n\n## 산출물\n| 산출물 | 크기 | SHA-256 |\n|---|---:|---|\n| {target_wheel.name} | {target_wheel.stat().st_size:,} | `{sha(target_wheel)}` |\n| {target_launcher.name} | {target_launcher.stat().st_size:,} | `{sha(target_launcher)}` |\n| {manifest_path.name} | {manifest_path.stat().st_size:,} | `{sha(manifest_path)}` |\n'''
+          (out/'VALIDATION_v0.26.8.md').write_text(validation, encoding='utf-8')
+          (root/'docs/VALIDATION_v0.26.8.md').write_text(validation, encoding='utf-8')
+          (out/'COLAB_ONE_CLICK_v0.26.8.md').write_text('# SemanticPromptTransfer v0.26.8\n\nDrive `versions/v0.26.8`의 Colab launcher를 열고 위에서부터 실행합니다.\n', encoding='utf-8')
+          print(validation)
+          PY
+
+      - name: Revalidate final tree
+        shell: bash
+        run: |
+          pytest -q
+          python -m compileall -q src tests
+
+      - name: Commit v0.26.8 release
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src pyproject.toml tests CHANGELOG.md notebooks/SemanticPromptTransfer_v0.26.8_COLAB_LAUNCHER.ipynb notebooks/SemanticPromptTransfer_v0.26.8_COLAB_ASSETS.json docs/VALIDATION_v0.26.8.md
+          git commit -m 'Release v0.26.8 direct streaming generation'
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SemanticPromptTransfer-v0.26.8-release
+          path: release_v0268/*
