@@ -1,4 +1,4 @@
-name: Release v0.26.12 multi-user queue
+name: Release v0.26.12 fair-share multi-user
 
 on:
   push:
@@ -20,19 +20,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Patch v0.26.12 multi-user queue and GPU scheduler
-        run: |
-          python tools/patch_v02612_multiuser.py
-          python tools/patch_v02612_queuefix.py
-
-      - name: Capture patched source
-        uses: actions/upload-artifact@v4
-        with:
-          name: v02612-patched-source-debug
-          path: |
-            src/semantic_prompt_transfer
-            tests/test_v02612_multiuser.py
-            notebooks/SemanticPromptTransfer_v0.26.12_COLAB_LAUNCHER.ipynb
+      - name: Patch v0.26.12 fair-share scheduler and output guards
+        run: python tools/patch_v02612_multiuser.py
 
       - name: Install and validate source tree
         run: |
@@ -41,8 +30,9 @@ jobs:
           pytest -q
           python -m compileall -q src tests
           python -c "import semantic_prompt_transfer as spt; assert spt.__version__ == '0.26.12'; assert not hasattr(spt,'FallbackGenerator')"
-          python -c "import json; from pathlib import Path; nb=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.12_COLAB_LAUNCHER.ipynb').read_text()); code='\n'.join(''.join(c.get('source',[])) for c in nb['cells'] if c.get('cell_type')=='code'); [compile(''.join(c.get('source',[])),f'cell-{i}','exec') for i,c in enumerate(nb['cells']) if c.get('cell_type')=='code']; assert 'MODEL_CONTEXT_TOKENS = 28672' in code; assert 'max_new_tokens=3600' in code; assert 'SPT_MAX_ACTIVE_REVIEW_JOBS\"] = \"1\"' in code; assert 'SPT_QUEUE_IDLE_TIMEOUT_SECONDS\"] = \"30\"' in code; assert 'SPT_EMBEDDING_GPU_SLOTS\"] = \"1\"' in code"
+          python -c "import json; from pathlib import Path; nb=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.12_COLAB_LAUNCHER.ipynb').read_text()); code='\n'.join(''.join(c.get('source',[])) for c in nb['cells'] if c.get('cell_type')=='code'); [compile(''.join(c.get('source',[])),f'cell-{i}','exec') for i,c in enumerate(nb['cells']) if c.get('cell_type')=='code']; assert 'MODEL_CONTEXT_TOKENS = 28672' in code; assert 'max_new_tokens=3600' in code; assert '\"--max-num-seqs\", \"4\"' in code; assert 'fair_share_parallel_quanta=2' in code; assert 'queue_idle_timeout_seconds=30' in code"
           python -c "from pathlib import Path; h=Path('src/semantic_prompt_transfer/examples/operational/credit_review_upload_demo.html').read_text(); assert 'QUEUE_IDLE_MS=30000' in h and '/queue-activity' in h and '/release-queue' in h and '재접속하시겠습니까?' in h"
+          python -c "from pathlib import Path; s=Path('src/semantic_prompt_transfer/poc_scheduler.py').read_text(); assert 'ROUND_ROBIN' in s or 'Round-robin' in s; r=Path('src/semantic_prompt_transfer/review.py').read_text(); assert '표·마크다운 표' in r and '대시(-)' in r"
 
       - name: Build wheel and release assets
         run: |
@@ -55,13 +45,14 @@ jobs:
           pytest -q
           python -m compileall -q src tests
           python -c "from pathlib import Path; assert 'class FallbackGenerator' not in Path('src/semantic_prompt_transfer/llm.py').read_text()"
+          python -c "import json; from pathlib import Path; m=json.loads(Path('notebooks/SemanticPromptTransfer_v0.26.12_COLAB_ASSETS.json').read_text()); assert m['multi_user']['scheduler_policy']=='ROUND_ROBIN_FAIR_SHARE'; assert m['multi_user']['queue_idle_timeout_seconds']==30"
 
       - name: Commit validated v0.26.12
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src tests pyproject.toml CHANGELOG.md notebooks/SemanticPromptTransfer_v0.26.12_COLAB_LAUNCHER.ipynb notebooks/SemanticPromptTransfer_v0.26.12_COLAB_ASSETS.json
-          git commit -m 'Release v0.26.12 multi-user queue and GPU scheduler'
+          git commit -m 'Release v0.26.12 fair-share multi-user scheduler'
           git push origin HEAD:main
 
       - uses: actions/upload-artifact@v4
