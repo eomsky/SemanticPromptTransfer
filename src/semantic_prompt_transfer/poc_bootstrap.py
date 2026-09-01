@@ -73,6 +73,8 @@ def build_colab_poc(
     model_context_tokens: int = 28672,
     generation_reserve_tokens: int = 3600,
     completion_reserve_tokens: int = 700,
+    fair_share_parallel_quanta: int = 2,
+    queue_idle_timeout_seconds: float = 30.0,
 ) -> ColabPocBundle:
     runtime = EphemeralColabRuntime(
         EphemeralColabConfig(
@@ -135,6 +137,8 @@ def build_colab_poc(
             reasoning_generator=reasoning_generator or primary_generator,
             completion_generator=completion_generator or primary_generator,
             prompt_builder=prompt_builder,
+            fair_share_parallel_quanta=fair_share_parallel_quanta,
+            queue_idle_timeout_seconds=queue_idle_timeout_seconds,
         )
         sessions = None if anonymous_access else PocIdentityService(
             runtime.root / "metadata" / "identity.sqlite",
@@ -195,6 +199,8 @@ def build_colab_poc_from_env() -> ColabPocBundle:
         allowed_origins=origins,
         verification_mode=os.environ.get("SPT_VERIFICATION_MODE", "ENFORCE"),
         session_ttl_seconds=int(os.environ.get("SPT_SESSION_TTL_SECONDS", str(4 * 60 * 60))),
+        fair_share_parallel_quanta=int(os.environ.get("SPT_FAIR_SHARE_PARALLEL_QUANTA", "2")),
+        queue_idle_timeout_seconds=float(os.environ.get("SPT_QUEUE_IDLE_TIMEOUT_SECONDS", "30")),
         runtime_lifetime_seconds=int(
             os.environ.get("SPT_RUNTIME_LIFETIME_SECONDS", str(12 * 60 * 60))
         ),

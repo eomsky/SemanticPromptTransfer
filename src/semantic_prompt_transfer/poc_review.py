@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+from contextlib import contextmanager
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from .fewshot import FewShotSelector
 from .llm import TextGenerator
 from .orchestration import ReviewGenerationOrchestrator, ReviewGenerationResult
 from .poc_processing import PocUploadProcessor, ShardedAttachmentRetriever
+from .poc_scheduler import FairShareReviewScheduler
 from .review import ReviewPromptBuilder
 from .review_docx import OpinionDocumentBuilder
 from .verification_flow import LLMVerificationAgent, VerificationMode
@@ -66,6 +68,9 @@ class EphemeralReviewJobService:
         reasoning_generator: TextGenerator | None = None,
         completion_generator: TextGenerator | None = None,
         prompt_builder: ReviewPromptBuilder | None = None,
+        scheduler: FairShareReviewScheduler | None = None,
+        fair_share_parallel_quanta: int = 2,
+        queue_idle_timeout_seconds: float = 30.0,
     ) -> None:
         self.runtime = runtime
         self.facts = PocCreditFactRepository(runtime)
@@ -77,6 +82,10 @@ class EphemeralReviewJobService:
         self.capture_service = EvidenceCaptureService(runtime)
         self.retriever = retriever
         self.chat_router = ChatIntentRouter()
+        self.scheduler = scheduler or FairShareReviewScheduler(
+            parallel_quanta=fair_share_parallel_quanta,
+            idle_timeout_seconds=queue_idle_timeout_seconds,
+        )
         mode = VerificationMode(str(getattr(verification_mode, "value", verification_mode)).upper())
         verifier = LLMVerificationAgent(verification_generator or generator) if mode is not VerificationMode.OFF else None
         reasoner = CreditReasoningLayer(reasoning_generator or generator)
@@ -131,14 +140,55 @@ class EphemeralReviewJobService:
             self._chat_history[job.job_id] = []
             self._chat_locks[job.job_id] = threading.Lock()
             self._terminal_jobs.discard(job.job_id)
+        queue_state = self.scheduler.register(job.job_id)
         self._publish(
             job.job_id,
-            "queued",
+            "scheduler_state",
             stage=JobStage.QUEUED.value,
             progress=0,
-            message="심사의견 생성 작업이 대기 중입니다.",
+            message="공정공유 처리에 참여했습니다. 동시 접속자가 많으면 각 작업이 순환하며 진행됩니다.",
+            **queue_state.to_dict(),
         )
-        return job.to_dict()
+        value = job.to_dict()
+        value["scheduler"] = queue_state.to_dict()
+        return value
+
+    def queue_state(self, job_id: str) -> dict[str, object]:
+        self.runtime.registry.get_job(job_id)
+        return self.scheduler.state(job_id).to_dict()
+
+    def touch_queue(self, job_id: str) -> dict[str, object]:
+        self.runtime.registry.get_job(job_id)
+        state = self.scheduler.touch(job_id)
+        self._publish(job_id, "scheduler_state", message="공정공유 처리를 계속합니다.", **state.to_dict())
+        return state.to_dict()
+
+    def suspend_queue(self, job_id: str) -> dict[str, object]:
+        self.runtime.registry.get_job(job_id)
+        state = self.scheduler.suspend(job_id)
+        self._publish(job_id, "scheduler_state", message="30초 이상 미사용으로 다음 GPU 작업부터 일시 중단합니다.", **state.to_dict())
+        return state.to_dict()
+
+    @contextmanager
+    def _work_slot(self, job_id: str, phase: str, item: ReviewItem | None):
+        with self.scheduler.quantum(job_id, phase) as state:
+            label = f"{item.value}. " if item is not None else ""
+            self._publish(
+                job_id, "scheduler_state",
+                message=f"{label}{phase} 처리 중 · 공정공유 {state.fair_share_percent:.1f}%",
+                review_item=item.value if item else None,
+                **state.to_dict(),
+            )
+            yield
+        try:
+            after = self.scheduler.state(job_id)
+            self._publish(
+                job_id, "scheduler_state",
+                message="다른 접속자의 작업과 GPU 시간을 순환 배분합니다." if after.status == "RUNNABLE" else "30초 이상 미사용으로 일시 중단되었습니다.",
+                **after.to_dict(),
+            )
+        except KeyError:
+            pass
 
     def run(self, job_id: str) -> ReviewGenerationResult:
         job = self.runtime.registry.get_job(job_id)
@@ -313,6 +363,7 @@ class EphemeralReviewJobService:
                 job_id=job_id,
                 claim_callback=on_claim,
                 patch_callback=on_patch,
+                work_slot=lambda phase, item: self._work_slot(job_id, phase, item),
             )
             with self._condition:
                 self._results[job_id] = result
@@ -366,6 +417,7 @@ class EphemeralReviewJobService:
             )
             return result
         finally:
+            self.scheduler.finish(job_id)
             with self._condition:
                 self._terminal_jobs.add(job_id)
                 self._condition.notify_all()

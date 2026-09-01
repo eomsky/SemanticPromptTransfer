@@ -1,3 +1,11 @@
+## v0.26.12
+- Fair-share multi-user scheduler: review jobs rotate at expensive work boundaries instead of one-user FIFO monopoly.
+- Generation/reasoning/verification work quanta share the vLLM engine; later users continue to make progress, albeit more slowly under load.
+- 30-second user inactivity suspends future GPU quanta after the current quantum; reconnect resumes the same case/job without deleting uploads.
+- Added explicit scheduler events and 26% bottleneck progress breakdown (retrieval / evidence planning / Credit Reasoning).
+- Final opinion is prose-only: generated evidence-summary/Markdown tables are prohibited and defensively removed; missing values are never rendered as '-' placeholders.
+- v0.26.11 rendering, evidence tracing, 28,672 context, 3,600 generation ceiling and conservative verifier are preserved.
+
 ## 0.26.11 - 2026-09-01
 
 - Fixed decimal/date-safe claim segmentation and removed duplicate frontend sentence splitting.

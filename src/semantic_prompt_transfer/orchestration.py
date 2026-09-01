@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
@@ -257,6 +258,40 @@ class ReviewGenerationOrchestrator:
         return _STYLE_PLACEHOLDER.sub("", value).strip()
 
     @staticmethod
+    def _strip_non_opinion_scaffolding(text: str) -> str:
+        """Remove accidental evidence-summary/markdown-table scaffolding from final prose.
+
+        FEW SHOT input summaries and RAG table evidence are context, not output format.
+        The model occasionally mirrors them as an evidence table with '-' placeholders.
+        Both chat and Word consume the same section text, so clean it once here.
+        """
+        value = str(text or "").replace("```markdown", "").replace("```", "").strip()
+        lines = value.splitlines()
+        kept: list[str] = []
+        suppress_table = False
+        removed = False
+        for line in lines:
+            stripped = line.strip()
+            if re.search(r"(?:신용조사서|첨부자료)?\s*근거\s*요약", stripped):
+                suppress_table = True
+                removed = True
+                continue
+            markdown_row = bool(re.match(r"^\|.*\|$", stripped))
+            markdown_sep = bool(re.match(r"^\|?\s*:?-{3,}", stripped))
+            tabular_header = bool(re.search(r"(?:20\d{2}[-./]?(?:0?[1-9]|1[0-2])|추정\s*\d*기)", stripped)) and ("\t" in line or line.count("  ") >= 2)
+            if suppress_table and (not stripped or markdown_row or markdown_sep or tabular_header or line.count("\t") >= 2):
+                removed = True
+                continue
+            if suppress_table and stripped:
+                suppress_table = False
+            if markdown_row or markdown_sep:
+                removed = True
+                continue
+            kept.append(line)
+        cleaned = "\n".join(kept).strip()
+        return cleaned if removed and cleaned else value
+
+    @staticmethod
     def _cited_ids(text: str, evidence: Sequence[EvidenceRecord]) -> tuple[str, ...]:
         allowed = {row.evidence_id for row in evidence}
         return tuple(value for value in dict.fromkeys(_CITATION.findall(str(text or ""))) if value in allowed)
@@ -278,7 +313,7 @@ class ReviewGenerationOrchestrator:
                 (lambda token: token_callback(item, token)) if token_callback else None,
             )
             if text:
-                text = self._strip_style_placeholder_leakage(text)
+                text = self._strip_non_opinion_scaffolding(self._strip_style_placeholder_leakage(text))
                 text = self._ensure_complete(
                     case=case,
                     job_id=job_id,
@@ -302,7 +337,7 @@ class ReviewGenerationOrchestrator:
                 # the retry; section_complete atomically replaces it when the retry succeeds.
                 text = self._generate_once(generator, prompt.messages)
                 if text:
-                    text = self._strip_style_placeholder_leakage(text)
+                    text = self._strip_non_opinion_scaffolding(self._strip_style_placeholder_leakage(text))
                     text = self._ensure_complete(
                         case=case,
                         job_id=job_id,
@@ -460,6 +495,7 @@ class ReviewGenerationOrchestrator:
         job_id: str | None = None,
         claim_callback: Callable[[ReviewItem, dict[str, Any]], None] | None = None,
         patch_callback: Callable[[ReviewItem, dict[str, Any]], None] | None = None,
+        work_slot: Callable[[str, ReviewItem | None], Any] | None = None,
     ) -> ReviewGenerationResult:
         generator = llm or self.llm
         if generator is None:
@@ -475,6 +511,9 @@ class ReviewGenerationOrchestrator:
         prompts: list[ReviewPromptPackage] = []
         recovered_any = False
 
+        def slot(phase: str, item: ReviewItem | None = None):
+            return work_slot(phase, item) if work_slot is not None else nullcontext()
+
         def emit(stage: JobStage, progress: int, message: str, item: ReviewItem | None = None) -> None:
             event = ProgressEvent(stage, progress, message, item)
             events.append(event)
@@ -489,7 +528,7 @@ class ReviewGenerationOrchestrator:
         try:
             emit(JobStage.PRECHECK, 5, "입력자료와 심사범위를 확인했습니다.")
             emit(JobStage.CREDIT_REPORT_LOAD, 18, "신용조사서와 첨부자료를 심사 근거로 로드했습니다.")
-            emit(JobStage.ATTACHMENT_RETRIEVAL, 26, "A~E 전체 관련 근거를 검색하고 중요도를 평가합니다.")
+            emit(JobStage.ATTACHMENT_RETRIEVAL, 26, "A~E 검색 질의를 준비합니다.")
 
             prepared: dict[ReviewItem, tuple[str, list[EvidenceRecord], list[Any]]] = {}
             evidence_by_item: dict[ReviewItem, list[EvidenceRecord]] = {}
@@ -499,12 +538,15 @@ class ReviewGenerationOrchestrator:
             bulk_search = getattr(self.attachment_retriever, "search_many", None)
             if callable(bulk_search):
                 try:
-                    bulk_rows = list(bulk_search(
-                        [queries[item] for item in ordered_items],
-                        filters={"tenant_id": case.tenant_id, "case_id": case.case_id},
-                    ))
+                    emit(JobStage.ATTACHMENT_RETRIEVAL, 27, "E5로 A~E 검색 질의를 일괄 임베딩합니다.")
+                    with slot("retrieval", None):
+                        bulk_rows = list(bulk_search(
+                            [queries[item] for item in ordered_items],
+                            filters={"tenant_id": case.tenant_id, "case_id": case.case_id},
+                        ))
                     if len(bulk_rows) == len(ordered_items):
                         retrieval_by_item = dict(zip(ordered_items, bulk_rows, strict=True))
+                    emit(JobStage.ATTACHMENT_RETRIEVAL, 29, "A~E 벡터 검색을 완료했습니다.")
                 except Exception as exc:
                     self._audit(case, job_id, "BATCH_RETRIEVAL_FALLBACK", {"error_type": type(exc).__name__, "message": str(exc)[:1000]})
             for index, item in enumerate(ordered_items):
@@ -539,11 +581,14 @@ class ReviewGenerationOrchestrator:
                     self._audit(case, job_id, "FEW_SHOT_SELECTION_RECOVERED", {"item": item.value, "message": str(exc)[:1000]})
                 prepared[item] = (query, evidence, examples)
                 evidence_by_item[item] = evidence
-                emit(JobStage.ATTACHMENT_RETRIEVAL, 27 + index * 2, f"{item.value}. 관련 근거 검색 완료", item)
+                emit(JobStage.ATTACHMENT_RETRIEVAL, 30 + index, f"{item.value}. 근거 선별·중복정리 완료", item)
 
-            emit(JobStage.ATTACHMENT_RETRIEVAL, 38, "중요 이슈·위험·완화요인·상환영향 및 A~E 연계를 설계합니다.")
+            emit(JobStage.ATTACHMENT_RETRIEVAL, 35, "근거 검색 완료 · Credit Reasoning 순서를 기다립니다.")
             try:
-                portfolio = self.reasoner.plan(case, evidence_by_item)
+                emit(JobStage.ATTACHMENT_RETRIEVAL, 37, "중요 이슈·위험·완화요인·상환영향 및 A~E 연계를 설계합니다.")
+                with slot("reasoning", None):
+                    portfolio = self.reasoner.plan(case, evidence_by_item)
+                emit(JobStage.ATTACHMENT_RETRIEVAL, 40, "Credit Reasoning 판단 설계를 완료했습니다.")
             except Exception as exc:
                 recovered_any = True
                 portfolio = CreditReasoningLayer(None).plan(case, evidence_by_item)
@@ -565,24 +610,27 @@ class ReviewGenerationOrchestrator:
                     prompt_evidence = self._prompt_evidence(prompt, evidence)
                     for row in prompt_evidence:
                         evidence_catalog[row.evidence_id] = row.to_dict()
-                    generated_text, recovered = self._technical_generate(
-                        case=case,
-                        job_id=job_id,
-                        item=item,
-                        prompt=prompt,
-                        generator=generator,
-                        token_callback=token_callback,
-                    )
+                    with slot("generation", item):
+                        generated_text, recovered = self._technical_generate(
+                            case=case,
+                            job_id=job_id,
+                            item=item,
+                            prompt=prompt,
+                            generator=generator,
+                            token_callback=token_callback,
+                        )
                     recovered_any = recovered_any or recovered
-                    future = verification_pool.submit(
-                        self._verify_and_patch,
-                        item=item,
-                        text=generated_text,
-                        evidence=prompt_evidence,
-                        generator=generator,
-                        claim_callback=claim_callback,
-                        patch_callback=patch_callback,
-                    )
+                    def verify_one(current_item=item, current_text=generated_text, current_evidence=prompt_evidence):
+                        with slot("verification", current_item):
+                            return self._verify_and_patch(
+                                item=current_item,
+                                text=current_text,
+                                evidence=current_evidence,
+                                generator=generator,
+                                claim_callback=claim_callback,
+                                patch_callback=patch_callback,
+                            )
+                    future = verification_pool.submit(verify_one)
                     pending[item] = {
                         "future": future,
                         "prompt": prompt,

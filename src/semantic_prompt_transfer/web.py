@@ -40,6 +40,12 @@ class ReviewJobStarter(Protocol):
 
     def stream_chat(self, job_id: str, message: str) -> Iterator[dict[str, Any]]: ...
 
+    def queue_state(self, job_id: str) -> dict[str, object]: ...
+
+    def touch_queue(self, job_id: str) -> dict[str, object]: ...
+
+    def suspend_queue(self, job_id: str) -> dict[str, object]: ...
+
 
 def create_fastapi_app(
     application: OperationalApplicationService,
@@ -430,6 +436,27 @@ def create_fastapi_app(
     def review_status(job_id: str, x_poc_token: str | None = Header(None)):
         authorize_job(job_id, x_poc_token)
         return application.get_review_job(job_id)
+
+    @app.get("/api/v1/review-jobs/{job_id}/queue-state")
+    def review_queue_state(job_id: str, x_poc_token: str | None = Header(None)):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+        return review_jobs.queue_state(job_id)
+
+    @app.post("/api/v1/review-jobs/{job_id}/queue-activity")
+    def review_queue_activity(job_id: str, x_poc_token: str | None = Header(None)):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+        return review_jobs.touch_queue(job_id)
+
+    @app.post("/api/v1/review-jobs/{job_id}/release-queue")
+    def review_release_queue(job_id: str, x_poc_token: str | None = Header(None)):
+        authorize_job(job_id, x_poc_token)
+        if review_jobs is None:
+            raise HTTPException(status_code=501, detail="review job starter is not configured")
+        return review_jobs.suspend_queue(job_id)
 
     @app.get("/api/v1/review-jobs/{job_id}/stream")
     def review_stream(
