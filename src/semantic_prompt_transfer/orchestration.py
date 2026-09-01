@@ -2,29 +2,30 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
-from .domain import (
-    CaseContext,
-    CreditFact,
-    EvidenceRecord,
-    JobStage,
-    ProgressEvent,
-    ReviewItem,
-    ReviewSectionDraft,
-)
+from .domain import CaseContext, CreditFact, EvidenceRecord, JobStage, ProgressEvent, ReviewItem, ReviewSectionDraft
+from .evidence_trace import EvidenceTraceLedger
 from .fewshot import FewShotSelector
 from .llm import TextGenerator
 from .query_profiles import QueryProfileRegistry
 from .registry import OperationalRegistry
 from .review import EvidenceAssembler, ReviewPromptBuilder, ReviewPromptPackage
 from .review_docx import OpinionDocumentBuilder
-from .validation import OpinionValidator, ValidationIssue, ValidationReport
-
+from .validation import OpinionValidator
+from .verification_flow import (
+    ClaimSegmenter,
+    NoOpVerificationAgent,
+    RepairCoordinator,
+    VerificationAgent,
+    VerificationMode,
+    VerificationStatus,
+)
 
 LLMClient = TextGenerator
+_CITATION = re.compile(r"(?:CR|ATT)_[a-f0-9]{20}", re.IGNORECASE)
 
 
 class AttachmentRetriever(Protocol):
@@ -32,7 +33,7 @@ class AttachmentRetriever(Protocol):
 
 
 class ReviewValidationError(RuntimeError):
-    """Legacy exception retained for API compatibility; v0.26.4 does not terminate on it."""
+    """Legacy compatibility only. Semantic validation no longer gates generation."""
 
 
 @dataclass(frozen=True)
@@ -54,9 +55,12 @@ class ReviewGenerationResult:
 
 
 class ReviewGenerationOrchestrator:
-    """Non-failing grounded A-E generation with repair, deterministic fallback and audit."""
+    """Streaming generation core with optional non-destructive verification.
 
-    _CELL = re.compile(r"\b[A-Z]{1,3}\d{1,7}(?==)|\b[A-Z]{1,3}\d{1,7}:[A-Z]{1,3}\d{1,7}\b")
+    v0.26.6 defaults to OFF. SHADOW observes completed claims without changing the
+    generated opinion. ENFORCE can only patch the failing claim/span; whole-section
+    and A-E rewrites are structurally absent from this orchestrator.
+    """
 
     def __init__(
         self,
@@ -71,17 +75,23 @@ class ReviewGenerationOrchestrator:
         registry: OperationalRegistry | None = None,
         llm: TextGenerator | None = None,
         max_repair_attempts: int = 2,
+        verification_mode: VerificationMode | str = VerificationMode.OFF,
+        verifier: VerificationAgent | None = None,
     ) -> None:
         self.attachment_retriever = attachment_retriever
         self.few_shot_selector = few_shot_selector
         self.query_profiles = query_profiles or QueryProfileRegistry()
         self.evidence_assembler = evidence_assembler or EvidenceAssembler()
         self.prompt_builder = prompt_builder or ReviewPromptBuilder()
+        # Diagnostic compatibility only. It is deliberately not a generation gate.
         self.validator = validator or OpinionValidator()
         self.document_builder = document_builder or OpinionDocumentBuilder()
         self.registry = registry
         self.llm = llm
-        self.max_repair_attempts = max(0, int(max_repair_attempts))
+        self.verification_mode = VerificationMode(str(getattr(verification_mode, "value", verification_mode)).upper())
+        self.verifier = verifier or NoOpVerificationAgent()
+        self.segmenter = ClaimSegmenter()
+        self.repair = RepairCoordinator(max_repair_attempts)
 
     def _audit(self, case: CaseContext, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if not self.registry:
@@ -91,7 +101,6 @@ class ReviewGenerationOrchestrator:
             try:
                 recorder(case.tenant_id, case.case_id, job_id, event_type, payload)
             except Exception:
-                # Audit persistence must never terminate generation.
                 pass
 
     @staticmethod
@@ -99,79 +108,6 @@ class ReviewGenerationOrchestrator:
         wanted = {str(row.get("evidence_id") or "") for row in prompt.evidence}
         by_id = {row.evidence_id: row for row in original}
         return [by_id[eid] for eid in wanted if eid in by_id]
-
-    @staticmethod
-    def _issue_payload(report: ValidationReport) -> list[dict[str, str]]:
-        return [issue.to_dict() for issue in report.issues]
-
-    @staticmethod
-    def _repair_messages(
-        prompt: ReviewPromptPackage,
-        draft: str,
-        report: ValidationReport,
-    ) -> list[dict[str, str]]:
-        issues = "\n".join(f"- {issue.code}: {issue.message}" for issue in report.issues)
-        return [
-            *[dict(row) for row in prompt.messages],
-            {"role": "assistant", "content": draft},
-            {
-                "role": "user",
-                "content": (
-                    "직전 초안은 내부 근거검증에서 보정이 필요하다. 아래 검증정보만 반영하여 "
-                    "같은 심사항목의 최종 문구 전체를 다시 작성하라. 근거에 없는 수치·부호·단위·기간은 "
-                    "삭제하고, 숫자 주장은 그 숫자를 실제 포함한 근거 ID를 같은 문장 끝에 인용하라. "
-                    "동일 사실의 직접 충돌에서는 신용조사서를 사용한다. 검증정보 자체를 답변에 노출하지 마라.\n"
-                    + issues
-                ),
-            },
-        ]
-
-    @classmethod
-    def _clean_evidence_text(cls, row: EvidenceRecord, limit: int = 520) -> str:
-        value = " ".join(str(row.content or "").split())
-        value = cls._CELL.sub("", value)
-        # Credit rows use field_name=value. Keep the semantic field label but remove repeated cell syntax.
-        value = re.sub(r"\s+", " ", value).strip(" ;|")
-        return value[:limit].rstrip()
-
-    def _compose_grounded(self, evidence: Sequence[EvidenceRecord]) -> str:
-        if not evidence:
-            return "현재 제공된 자료에서 해당 심사항목을 직접 뒷받침할 근거를 확인하지 못해 추가 자료 확인이 필요하다."
-
-        safe: list[EvidenceRecord] = []
-        for row in evidence:
-            # Attachment evidence marked as directly conflicting is not used by deterministic fallback.
-            if row.source_class == "attachment" and row.metadata.get("conflicts_with_credit_ids"):
-                continue
-            safe.append(row)
-        if not safe:
-            safe = [row for row in evidence if row.source_class == "credit_report"] or list(evidence)
-
-        safe.sort(
-            key=lambda row: (
-                -float(row.metadata.get("selection_score") or row.metadata.get("score") or 0.0),
-                row.evidence_id,
-            )
-        )
-        chosen = safe[:3]
-        statements = []
-        for row in chosen:
-            content = self._clean_evidence_text(row)
-            if content:
-                statements.append(f"{content} [{row.evidence_id}]")
-        if not statements:
-            return f"확인 가능한 근거자료를 기준으로 추가 검토가 필요하다. [{chosen[0].evidence_id}]"
-        return "확인된 근거자료상 " + " ".join(statements)
-
-    @staticmethod
-    def _minimal_grounded(evidence: Sequence[EvidenceRecord]) -> str:
-        if not evidence:
-            return "현재 제공된 자료에서 해당 심사항목의 직접 근거를 확인하지 못해 추가 확인이 필요하다."
-        row = next(
-            (value for value in evidence if value.source_class == "credit_report"),
-            evidence[0],
-        )
-        return f"확인된 근거자료를 기준으로 해당 심사항목을 보수적으로 검토할 필요가 있다. [{row.evidence_id}]"
 
     @staticmethod
     def _generate_once(
@@ -193,95 +129,116 @@ class ReviewGenerationOrchestrator:
             token_callback(text)
         return text
 
-    def _validated_item(
+    @staticmethod
+    def _cited_ids(text: str, evidence: Sequence[EvidenceRecord]) -> tuple[str, ...]:
+        allowed = {row.evidence_id for row in evidence}
+        return tuple(value for value in dict.fromkeys(_CITATION.findall(str(text or ""))) if value in allowed)
+
+    def _technical_generate(
         self,
         *,
         case: CaseContext,
         job_id: str,
         item: ReviewItem,
         prompt: ReviewPromptPackage,
-        evidence: Sequence[EvidenceRecord],
-        examples: Sequence[Any],
         generator: TextGenerator,
-        emit: Callable[[JobStage, int, str, ReviewItem | None], None],
-        base_progress: int,
         token_callback: Callable[[ReviewItem, str], None] | None,
-    ) -> tuple[str, ValidationReport, bool]:
-        recovered = False
+    ) -> tuple[str, bool]:
         try:
             text = self._generate_once(
                 generator,
                 prompt.messages,
                 (lambda token: token_callback(item, token)) if token_callback else None,
             )
-            if not text:
-                raise RuntimeError("empty generation")
-        except Exception as exc:
-            recovered = True
+            if text:
+                return text, False
+            raise RuntimeError("empty generation")
+        except Exception as first:
             self._audit(
                 case,
                 job_id,
-                "GENERATION_PRIMARY_RECOVERED",
-                {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]},
+                "GENERATION_RETRY",
+                {"item": item.value, "error_type": type(first).__name__, "message": str(first)[:1000]},
             )
-            emit(JobStage.FALLBACK_GENERATING, min(base_progress + 6, 89), f"{item.value}. 근거기반 대체 생성 중", item)
-            text = self._compose_grounded(evidence)
-
-        report = self.validator.validate(text, evidence, examples)
-        if report.valid:
-            return text, report, recovered
-
-        recovered = True
-        self._audit(
-            case,
-            job_id,
-            "VALIDATION_REPAIR_REQUIRED",
-            {"item": item.value, "issues": self._issue_payload(report)},
-        )
-        for attempt in range(1, self.max_repair_attempts + 1):
-            emit(JobStage.REPAIRING, min(base_progress + 3 + attempt, 89), f"{item.value}. 근거 검증 자동보정 중", item)
             try:
-                repaired = self._generate_once(generator, self._repair_messages(prompt, text, report))
-            except Exception as exc:
+                # A partially streamed primary response may already be visible. Do not stream
+                # the retry; section_complete atomically replaces it when the retry succeeds.
+                text = self._generate_once(generator, prompt.messages)
+                if text:
+                    return text, True
+                raise RuntimeError("empty retry generation")
+            except Exception as second:
                 self._audit(
                     case,
                     job_id,
-                    "VALIDATION_REPAIR_GENERATION_RECOVERED",
-                    {"item": item.value, "attempt": attempt, "error_type": type(exc).__name__, "message": str(exc)[:1000]},
+                    "GENERATION_TECHNICAL_RECOVERY",
+                    {"item": item.value, "error_type": type(second).__name__, "message": str(second)[:1000]},
                 )
-                break
-            if not repaired:
+                # Technical recovery never dumps raw evidence or fabricates a credit judgment.
+                return "일시적인 생성 처리 문제로 해당 심사항목의 문구를 확정하지 못했습니다.", True
+
+    def _verify_and_patch(
+        self,
+        *,
+        item: ReviewItem,
+        text: str,
+        evidence: Sequence[EvidenceRecord],
+        generator: TextGenerator,
+        claim_callback: Callable[[ReviewItem, dict[str, Any]], None] | None,
+        patch_callback: Callable[[ReviewItem, dict[str, Any]], None] | None,
+    ) -> tuple[str, list[dict[str, Any]], bool]:
+        allowed_ids = [row.evidence_id for row in evidence]
+        claims = self.segmenter.segment(item, text, allowed_ids)
+        for claim in claims:
+            if claim_callback:
+                claim_callback(item, {"type": "claim_complete", **claim.to_dict()})
+
+        if self.verification_mode is VerificationMode.OFF:
+            return text, [], False
+
+        findings: list[tuple[Any, Any]] = []
+        by_id = {row.evidence_id: row for row in evidence}
+        for claim in claims:
+            claim_evidence = [by_id[eid] for eid in claim.evidence_ids if eid in by_id] or list(evidence)
+            if claim_callback:
+                claim_callback(
+                    item,
+                    {"type": "verification_started", "claim_id": claim.claim_id, "revision": claim.revision},
+                )
+            finding = self.verifier.verify(claim, claim_evidence)
+            findings.append((claim, finding))
+            if claim_callback:
+                claim_callback(item, {"type": "verification_result", **finding.to_dict()})
+
+        if self.verification_mode is VerificationMode.SHADOW:
+            return text, [finding.to_dict() for _, finding in findings], False
+
+        repaired_any = False
+        current = text
+        # Reverse order preserves the original offsets. The current slice is the only
+        # mutable scope, so another claim can never be rewritten by this repair.
+        for claim, finding in sorted(findings, key=lambda pair: pair[0].start, reverse=True):
+            if finding.status is not VerificationStatus.FAIL:
                 continue
-            text = repaired
-            report = self.validator.validate(text, evidence, examples)
-            if report.valid:
-                self._audit(case, job_id, "VALIDATION_REPAIRED", {"item": item.value, "attempt": attempt})
-                return text, report, True
-            self._audit(
-                case,
-                job_id,
-                "VALIDATION_REPAIR_RETRY",
-                {"item": item.value, "attempt": attempt, "issues": self._issue_payload(report)},
-            )
-
-        emit(JobStage.FALLBACK_GENERATING, min(base_progress + 7, 89), f"{item.value}. 검증가능 근거문구 구성 중", item)
-        text = self._compose_grounded(evidence)
-        report = self.validator.validate(text, evidence, examples)
-        if report.valid:
-            self._audit(case, job_id, "VALIDATION_DETERMINISTIC_FALLBACK", {"item": item.value})
-            return text, report, True
-
-        # Final fail-closed-to-grounded path: no numbers, one valid citation. It is intentionally
-        # conservative and mechanically valid even if source text itself is irregular.
-        text = self._minimal_grounded(evidence)
-        report = self.validator.validate(text, evidence, examples)
-        if not report.valid:
-            # With no evidence the no-evidence sentence is valid; with evidence this sentence only cites
-            # an existing id and contains no numeric claim. Keep an explicit valid report as last resort.
-            cited = tuple(row.evidence_id for row in evidence[:1])
-            report = ValidationReport(True, (), cited)
-        self._audit(case, job_id, "VALIDATION_MINIMAL_FALLBACK", {"item": item.value})
-        return text, report, True
+            claim_evidence = [by_id[eid] for eid in claim.evidence_ids if eid in by_id] or list(evidence)
+            repaired = self.repair.repair(generator, claim, finding, claim_evidence)
+            if not repaired or repaired == claim.text:
+                continue
+            current = current[: claim.start] + repaired + current[claim.end :]
+            repaired_any = True
+            if patch_callback:
+                patch_callback(
+                    item,
+                    {
+                        "type": "claim_patch",
+                        "claim_id": claim.claim_id,
+                        "revision": claim.revision + 1,
+                        "old_text": claim.text,
+                        "new_text": repaired,
+                        "section_text": current,
+                    },
+                )
+        return current, [finding.to_dict() for _, finding in findings], repaired_any
 
     def _emergency_result(
         self,
@@ -301,20 +258,26 @@ class ReviewGenerationOrchestrator:
         )
         sections = tuple(
             ReviewSectionDraft(
-                review_item=item,
-                text="현재 처리 가능한 근거 범위가 제한되어 해당 심사항목은 추가 자료 확인이 필요하다.",
-                evidence_ids=(),
-                validation={"valid": True, "issues": [], "cited_evidence_ids": [], "recovered": True},
+                item,
+                "일시적인 처리 문제로 해당 심사항목의 문구를 확정하지 못했습니다.",
+                (),
+                {"valid": True, "verification_mode": self.verification_mode.value, "technical_recovery": True},
             )
             for item in ReviewItem.ordered()
         )
         target = self.document_builder.build_minimal(case, sections, output_path)
         if self.registry:
             try:
-                self.registry.update_job(job_id, JobStage.COMPLETE_WITH_WARNINGS, 100, "보수적 대체문구로 생성 완료", str(target))
+                self.registry.update_job(
+                    job_id,
+                    JobStage.COMPLETE_WITH_WARNINGS,
+                    100,
+                    "기술 복구를 포함해 생성 완료",
+                    str(target),
+                )
             except Exception:
                 pass
-        complete = ProgressEvent(JobStage.COMPLETE_WITH_WARNINGS, 100, "보수적 대체문구로 생성 완료")
+        complete = ProgressEvent(JobStage.COMPLETE_WITH_WARNINGS, 100, "기술 복구를 포함해 생성 완료")
         events.append(complete)
         if progress_callback:
             progress_callback(complete)
@@ -330,6 +293,8 @@ class ReviewGenerationOrchestrator:
         token_callback: Callable[[ReviewItem, str], None] | None = None,
         section_callback: Callable[[ReviewItem, str, list[dict[str, Any]], dict[str, Any]], None] | None = None,
         job_id: str | None = None,
+        claim_callback: Callable[[ReviewItem, dict[str, Any]], None] | None = None,
+        patch_callback: Callable[[ReviewItem, dict[str, Any]], None] | None = None,
     ) -> ReviewGenerationResult:
         generator = llm or self.llm
         if generator is None:
@@ -358,16 +323,12 @@ class ReviewGenerationOrchestrator:
 
         try:
             emit(JobStage.PRECHECK, 5, "입력자료와 심사범위를 확인했습니다.")
-            emit(
-                JobStage.CREDIT_REPORT_LOAD,
-                20,
-                "신용조사서 자료를 검토 대상으로 로드했습니다." if credit_facts else "첨부자료 기준으로 검토를 진행합니다.",
-            )
-            emit(JobStage.ATTACHMENT_RETRIEVAL, 30, "기타 첨부자료의 관련 근거를 검색합니다.")
+            emit(JobStage.CREDIT_REPORT_LOAD, 20, "심사자료를 검토 대상으로 로드했습니다.")
+            emit(JobStage.ATTACHMENT_RETRIEVAL, 30, "항목별 관련 근거를 검색합니다.")
 
             sections: list[ReviewSectionDraft] = []
-            evidence_by_item: dict[str, list[EvidenceRecord]] = {}
-            examples_by_item: dict[str, Sequence[Any]] = {}
+            trace = EvidenceTraceLedger()
+            evidence_catalog: dict[str, dict[str, Any]] = {}
 
             for index, item in enumerate(ReviewItem.ordered()):
                 base = 32 + index * 12
@@ -392,13 +353,13 @@ class ReviewGenerationOrchestrator:
                     evidence = self.evidence_assembler.assemble(item, credit_facts, retrieval)
                 except Exception as exc:
                     recovered_any = True
+                    evidence = self.evidence_assembler.assemble(item, credit_facts, {"hits": []}) if credit_facts else []
                     self._audit(
                         case,
                         job_id,
                         "EVIDENCE_ASSEMBLY_RECOVERED",
                         {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]},
                     )
-                    evidence = self.evidence_assembler.assemble(item, credit_facts, {"hits": []}) if credit_facts else []
 
                 try:
                     examples = self.few_shot_selector.select(
@@ -410,61 +371,73 @@ class ReviewGenerationOrchestrator:
                 except Exception as exc:
                     recovered_any = True
                     examples = []
-                    self._audit(case, job_id, "FEW_SHOT_SELECTION_RECOVERED", {"item": item.value, "message": str(exc)[:1000]})
+                    self._audit(
+                        case,
+                        job_id,
+                        "FEW_SHOT_SELECTION_RECOVERED",
+                        {"item": item.value, "message": str(exc)[:1000]},
+                    )
 
                 prompt = self.prompt_builder.build(case, item, query, evidence, list(examples))
                 prompts.append(prompt)
                 prompt_evidence = self._prompt_evidence(prompt, evidence)
-                evidence_by_item[item.value] = prompt_evidence
-                examples_by_item[item.value] = examples
+                for row in prompt_evidence:
+                    evidence_catalog[row.evidence_id] = row.to_dict()
 
-                text, validation, recovered = self._validated_item(
+                text, recovered = self._technical_generate(
                     case=case,
                     job_id=job_id,
                     item=item,
                     prompt=prompt,
-                    evidence=prompt_evidence,
-                    examples=examples,
                     generator=generator,
-                    emit=emit,
-                    base_progress=base,
                     token_callback=token_callback,
                 )
                 recovered_any = recovered_any or recovered
-                validation_dict = validation.to_dict()
-                validation_dict["recovered"] = recovered
-                section = ReviewSectionDraft(item, text, validation.cited_evidence_ids, validation_dict)
+
+                text, verification, repaired = self._verify_and_patch(
+                    item=item,
+                    text=text,
+                    evidence=prompt_evidence,
+                    generator=generator,
+                    claim_callback=claim_callback,
+                    patch_callback=patch_callback,
+                )
+                recovered_any = recovered_any or repaired
+                cited_ids = self._cited_ids(text, prompt_evidence)
+                refs = trace.register(item, prompt_evidence, cited_ids)
+                meta = {
+                    "valid": True,
+                    "verification_mode": self.verification_mode.value,
+                    "verification": verification,
+                    "recovered": recovered,
+                    "repaired": repaired,
+                    "cited_evidence_ids": list(cited_ids),
+                    "evidence_refs": [ref.to_dict() for ref in refs],
+                }
+                # evidence_refs is a v0.26.6 field; the integration patch extends the
+                # dataclass while preserving the old constructor prefix for compatibility.
+                section = ReviewSectionDraft(
+                    review_item=item,
+                    text=text,
+                    evidence_ids=cited_ids,
+                    validation=meta,
+                    evidence_refs=tuple(ref.to_dict() for ref in refs),
+                )
                 sections.append(section)
                 if section_callback:
-                    section_callback(item, text, prompt.evidence, validation_dict)
+                    section_callback(item, text, prompt.evidence, meta)
                 emit(JobStage.ITEM_GENERATION, base + 10, f"{item.value}. {item.title} 생성 완료 ({index + 1}/5)", item)
 
-            emit(JobStage.CROSS_VALIDATING, 92, "심사항목 간 수치와 근거 연결을 교차 점검합니다.")
-            cross = self.validator.validate_cross_sections(sections, evidence_by_item)
-            if not cross.valid:
-                recovered_any = True
-                self._audit(case, job_id, "CROSS_SECTION_REPAIR_REQUIRED", {"issues": self._issue_payload(cross)})
-                rebuilt: list[ReviewSectionDraft] = []
-                for section in sections:
-                    item = section.review_item
-                    ev = evidence_by_item.get(item.value, [])
-                    text = self._compose_grounded(ev)
-                    report = self.validator.validate(text, ev, examples_by_item.get(item.value, ()))
-                    if not report.valid:
-                        text = self._minimal_grounded(ev)
-                        report = self.validator.validate(text, ev, examples_by_item.get(item.value, ()))
-                    validation_dict = report.to_dict()
-                    validation_dict["recovered"] = True
-                    rebuilt_section = replace(section, text=text, evidence_ids=report.cited_evidence_ids, validation=validation_dict)
-                    rebuilt.append(rebuilt_section)
-                    if section_callback:
-                        prompt = next(value for value in prompts if value.review_item is item)
-                        section_callback(item, text, prompt.evidence, validation_dict)
-                sections = rebuilt
-
-            emit(JobStage.DOCX_RENDER, 98, "심사의견 Word 파일을 생성합니다.")
+            # No rule-based cross-validation gate exists here. Verification, when enabled,
+            # has already been applied to individual claims only.
+            emit(JobStage.DOCX_RENDER, 98, "심사의견과 근거 부록 Word 파일을 생성합니다.")
             try:
-                target = self.document_builder.build(case, sections, output_path)
+                target = self.document_builder.build(
+                    case,
+                    sections,
+                    output_path,
+                    evidence_catalog=evidence_catalog,
+                )
             except Exception as exc:
                 recovered_any = True
                 self._audit(
@@ -476,7 +449,12 @@ class ReviewGenerationOrchestrator:
                 target = self.document_builder.build_minimal(case, sections, output_path)
 
             final_stage = JobStage.COMPLETE_WITH_WARNINGS if recovered_any else JobStage.COMPLETE
-            final_message = "자동보정을 포함해 심사의견 생성이 완료되었습니다." if recovered_any else "심사의견 생성이 완료되었습니다."
+            if self.verification_mode is VerificationMode.OFF:
+                final_message = "심사의견 생성이 완료되었습니다."
+            elif self.verification_mode is VerificationMode.SHADOW:
+                final_message = "심사의견 생성 및 비개입 검증이 완료되었습니다."
+            else:
+                final_message = "심사의견 생성 및 최소범위 검증 반영이 완료되었습니다."
             if self.registry:
                 try:
                     self.registry.update_job(job_id, final_stage, 100, final_message, str(target))
