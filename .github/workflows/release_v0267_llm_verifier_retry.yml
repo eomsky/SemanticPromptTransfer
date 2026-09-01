@@ -1,0 +1,122 @@
+name: Retry v0.26.7 LLM verifier release
+
+on:
+  push:
+    paths:
+      - '.github/workflows/release_v0267_llm_verifier_retry.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply v0.26.7 source patch from canonical workflow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/release_v0267_llm_verifier.yml').read_text(encoding='utf-8')
+          begin = "          cat > /tmp/patch_v0267.py <<'PY'\n"
+          start = text.index(begin) + len(begin)
+          end = text.index("\n          PY\n          python /tmp/patch_v0267.py", start)
+          lines = text[start:end].splitlines()
+          payload = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          Path('/tmp/patch_v0267.py').write_text(payload, encoding='utf-8')
+          PY
+          python /tmp/patch_v0267.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/test_package.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('self.assertEqual(__version__, "0.26.6")', 'self.assertEqual(__version__, "0.26.7")')
+          p.write_text(s, encoding='utf-8')
+          p = Path('tests/test_v0267_llm_verifier.py')
+          s = p.read_text(encoding='utf-8').replace('SourceTier.CREDIT_REPORT,', 'SourceTier.CREDIT_REPORT_ITEM,')
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Install and validate
+        run: |
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -e '.[poc]' pytest build >/dev/null
+          pytest -q
+          python -m compileall -q src tests
+
+      - name: Build wheel and release assets
+        run: |
+          python -m build --wheel
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          root = Path('.')
+          wheel = next((root/'dist').glob('semantic_prompt_transfer-0.26.7-*.whl'))
+          wsize = wheel.stat().st_size
+          wsha = hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+          src = root/'notebooks/SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb'
+          dst = root/'notebooks/SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb'
+          nb = json.loads(src.read_text(encoding='utf-8'))
+          for cell in nb.get('cells', []):
+              joined = ''.join(cell.get('source', []))
+              joined = joined.replace('v0.26.6','v0.26.7').replace('0.26.6','0.26.7').replace('v0266','v0267')
+              if cell.get('cell_type') == 'code' and 'bundle = build_colab_poc(' in joined and 'verification_mode=' not in joined:
+                  joined = joined.replace('        generator=local_generator,\n', '        generator=local_generator,\n        verification_mode="ENFORCE",\n')
+              if cell.get('cell_type') == 'markdown' and joined.startswith('# SemanticPromptTransfer v0.26.7'):
+                  joined += '\n\nv0.26.7은 동일 Gemma 4 엔진을 공유하는 독립 검증 LLM을 ENFORCE 모드로 실제 연결합니다. 명백한 사실 오류만 claim/span 단위로 최소 수정하며 자유대화에는 검증 LLM을 적용하지 않습니다.\n'
+              cell['source'] = joined.splitlines(keepends=True)
+          nb.setdefault('metadata',{}).setdefault('colab',{})['name'] = dst.name
+          dst.write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding='utf-8')
+          for i, cell in enumerate(nb.get('cells', [])):
+              if cell.get('cell_type') == 'code': compile(''.join(cell.get('source', [])), f'cell-{i}', 'exec')
+          code='\n'.join(''.join(c.get('source',[])) for c in nb.get('cells',[]) if c.get('cell_type')=='code')
+          assert 'verification_mode="ENFORCE"' in code
+          assert '136,281' in code and '500,000' not in code
+
+          manifest = {
+            'schema_version':3,'release':'v0.26.7','package_version':'0.26.7',
+            'drive_root':'/content/drive/MyDrive/SemanticPromptTransfer',
+            'runtime_root':'/content/spt_poc_runtime','stage_root':'/content/spt_bootstrap_v0267',
+            'base_asset_manifest':'runtime-assets/v0.26.3/SemanticPromptTransfer_v0.26.3_COLAB_ASSETS.json',
+            'assets':[{'role':'wheel','source':f'versions/v0.26.7/{wheel.name}','target':f'release/{wheel.name}','size':wsize,'sha256':wsha}],
+            'demo_assets':[
+              {'role':'credit_report','source':'demo-assets/신용조사서_ABC기업_v1.0.xlsx','processing':'deferred_until_review'},
+              {'role':'attachment','source':'demo-assets/[ABC기업]사업보고서(2026.03.23).pdf','processing':'deferred_until_review'}]
+          }
+          man = root/'notebooks/SemanticPromptTransfer_v0.26.7_COLAB_ASSETS.json'
+          man.write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          nsha=hashlib.sha256(dst.read_bytes()).hexdigest(); msha=hashlib.sha256(man.read_bytes()).hexdigest()
+          docs=root/'docs'; docs.mkdir(exist_ok=True)
+          docs.joinpath('VALIDATION_v0.26.7.md').write_text(f'''# SemanticPromptTransfer v0.26.7 검증 기록\n\n검증일: 2026-09-01\n\n## 핵심 변경\n- 실제 LLMVerificationAgent를 Colab 심사의견 lane에 ENFORCE로 활성화\n- 생성/검증 Agent는 동일 Gemma 4 vLLM 엔진을 공유하되 프롬프트와 역할은 완전 분리\n- 명백한 evidence-bound 사실 오류만 FAIL 허용\n- WARN/INSUFFICIENT_EVIDENCE는 생성 문구를 변경하지 않음\n- FAIL도 problem_span/claim 범위만 PatchGuard로 최소 수정\n- 자유대화에는 검증 LLM·few-shot·repair 미적용\n- v0.26.6의 Evidence Trace, 근거 병합/다양성, Word 캡처 부록, context-first capture, 새 FEW_SHOT_1 유지\n\n## 자동 검증\n- 전체 pytest 통과\n- compileall 통과\n- Colab 전체 code cell compile 통과\n- `verification_mode="ENFORCE"` 확인\n- 새 FEW_SHOT_1 식별값 포함 / 구 FEW_SHOT_1 식별값 미포함 확인\n\n## 산출물\n| 산출물 | 크기 | SHA-256 |\n|---|---:|---|\n| {wheel.name} | {wsize:,} | `{wsha}` |\n| {dst.name} | {dst.stat().st_size:,} | `{nsha}` |\n| {man.name} | {man.stat().st_size:,} | `{msha}` |\n''',encoding='utf-8')
+          docs.joinpath('COLAB_ONE_CLICK_v0.26.7.md').write_text('# SemanticPromptTransfer v0.26.7 Colab 실행\n\nA100에서 launcher를 열고 위에서부터 실행합니다. 생성 LLM과 검증 LLM은 동일 Gemma 4 엔진을 공유하며, 검증은 심사의견에만 적용됩니다.\n',encoding='utf-8')
+          readme=root/'README.md'; r=readme.read_text(encoding='utf-8').replace('SemanticPromptTransfer_v0.26.6_COLAB_LAUNCHER.ipynb',dst.name); readme.write_text(r,encoding='utf-8')
+          out=root/'release-v0.26.7'; out.mkdir(exist_ok=True)
+          for f in [wheel,dst,man,docs/'VALIDATION_v0.26.7.md',docs/'COLAB_ONE_CLICK_v0.26.7.md']:
+              (out/f.name).write_bytes(f.read_bytes())
+          PY
+          pytest -q
+          python -m compileall -q src tests
+
+      - name: Commit validated v0.26.7
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src pyproject.toml CHANGELOG.md README.md tests/test_package.py tests/test_v0267_llm_verifier.py \
+            notebooks/SemanticPromptTransfer_v0.26.7_COLAB_LAUNCHER.ipynb \
+            notebooks/SemanticPromptTransfer_v0.26.7_COLAB_ASSETS.json \
+            docs/VALIDATION_v0.26.7.md docs/COLAB_ONE_CLICK_v0.26.7.md
+          git commit -m 'Release v0.26.7 with active LLM verifier'
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SemanticPromptTransfer-v0.26.7-release
+          path: release-v0.26.7/
+          if-no-files-found: error
