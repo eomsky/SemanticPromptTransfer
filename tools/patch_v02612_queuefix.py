@@ -1,10 +1,7 @@
 from pathlib import Path
 
-path = Path('src/semantic_prompt_transfer/poc_scheduler.py')
+path = Path('tests/test_package.py')
 text = path.read_text(encoding='utf-8')
-old = '''        def to_dict(self) -> dict[str, object]:\n            return asdict(self)\n'''
-new = '''        def to_dict(self) -> dict[str, object]:\n            value = asdict(self)\n            value.pop("job_id", None)\n            return value\n'''
-if old not in text:
-    raise RuntimeError('QueueState.to_dict patch target missing')
-path.write_text(text.replace(old, new, 1), encoding='utf-8')
-print('v0.26.12 queue payload fixed')
+text = text.replace('self.assertEqual(__version__, "0.26.11")', 'self.assertEqual(__version__, "0.26.12")')
+path.write_text(text, encoding='utf-8')
+print('v0.26.12 legacy version expectation updated')
