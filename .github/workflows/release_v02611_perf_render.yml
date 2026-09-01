@@ -21,7 +21,9 @@ jobs:
           python-version: '3.12'
 
       - name: Patch v0.26.11 quality and performance
-        run: python tools/patch_v02611_perf_render.py
+        run: |
+          python tools/patch_v02611_perf_render.py
+          python tools/patch_v02611_testfix.py
 
       - name: Install and validate source tree
         run: |
