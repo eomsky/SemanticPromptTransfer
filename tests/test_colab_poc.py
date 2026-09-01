@@ -664,8 +664,8 @@ class ColabPocTests(unittest.TestCase):
 
             def stream(self, messages):
                 self.calls.append([dict(row) for row in messages])
-                if "후속 대화이므로" in messages[0]["content"]:
-                    yield "이전 대화와 심사의견을 이해한 후속 답변입니다."
+                if "자유대화에는" in messages[0]["content"]:
+                    yield "이전 자유대화를 이해한 자연스러운 후속 답변입니다."
                     return
                 match = re.search(r"evidence_id=([^\n]+)", messages[1]["content"])
                 yield f"승인예시문구가 아닌 현재 근거로 심사의견을 완결하였다. [{match.group(1)}]"
@@ -735,10 +735,11 @@ class ColabPocTests(unittest.TestCase):
             self.assertEqual(second[-1]["agent"], "심사지원 에이전트")
             second_prompt = generator.calls[-1]
             combined = "\n".join(row["content"] for row in second_prompt)
-            self.assertIn("[완료된 심사의견]", combined)
+            self.assertNotIn("[완료된 심사의견]", combined)
             self.assertIn("첫 번째 질문", combined)
-            self.assertIn("이전 대화와 심사의견을 이해한 후속 답변입니다.", combined)
+            self.assertIn("이전 자유대화를 이해한 자연스러운 후속 답변입니다.", combined)
             self.assertNotIn("과거 사례 입력", combined)
+            self.assertNotIn("[업로드 근거자료]", combined)
             runtime.close(purge=True)
 
     def test_pdf_capture_uses_page_block_coordinates(self):

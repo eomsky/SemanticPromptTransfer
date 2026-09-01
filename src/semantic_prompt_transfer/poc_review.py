@@ -255,11 +255,15 @@ class EphemeralReviewJobService:
                 )
 
             def on_claim(item: ReviewItem, payload: dict[str, Any]) -> None:
-                event = dict(payload); event_type = str(event.pop("type", "claim_complete"))
+                event = dict(payload)
+                event_type = str(event.pop("type", "claim_complete"))
+                event.pop("review_item", None)
                 self._publish(job_id, event_type, review_item=item.value, **event)
 
             def on_patch(item: ReviewItem, payload: dict[str, Any]) -> None:
-                event = dict(payload); event_type = str(event.pop("type", "claim_patch"))
+                event = dict(payload)
+                event_type = str(event.pop("type", "claim_patch"))
+                event.pop("review_item", None)
                 self._publish(job_id, event_type, review_item=item.value, **event)
 
             output = self.runtime.review_output_path(job.tenant_id, job.case_id, job_id)
@@ -314,7 +318,7 @@ class EphemeralReviewJobService:
             sections = tuple(
                 ReviewSectionDraft(
                     item,
-                    "현재 처리 가능한 근거 범위가 제한되어 해당 심사항목은 추가 자료 확인이 필요하다.",
+                    "일시적인 처리 문제로 해당 심사항목의 문구를 확정하지 못했습니다.",
                     (),
                     {"valid": True, "issues": [], "cited_evidence_ids": [], "recovered": True},
                 )
@@ -328,13 +332,13 @@ class EphemeralReviewJobService:
             try:
                 self.runtime.registry.update_job(
                     job_id, JobStage.COMPLETE_WITH_WARNINGS, 100,
-                    "보수적 대체문구로 심사의견 생성을 완료했습니다.", str(target)
+                    "기술 복구를 포함해 심사의견 생성을 완료했습니다.", str(target)
                 )
             except Exception:
                 pass
             self._publish(
                 job_id, "complete", stage=JobStage.COMPLETE_WITH_WARNINGS.value, progress=100,
-                message="보수적 대체문구로 심사의견 생성을 완료했습니다.",
+                message="기술 복구를 포함해 심사의견 생성을 완료했습니다.",
                 output_filename=Path(target).name, recovered=True,
             )
             return result

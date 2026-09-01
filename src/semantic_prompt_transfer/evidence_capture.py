@@ -159,9 +159,9 @@ class EvidenceCaptureService:
                 value = str(extra or "").strip()
                 if value and value not in highlight_ranges and not value.startswith("ROW:"):
                     highlight_ranges.append(value)
-            bounds = [range_boundaries(value) for value in highlight_ranges]
-            min_col = min(value[0] for value in bounds); min_row = min(value[1] for value in bounds)
-            max_col = max(value[2] for value in bounds); max_row = max(value[3] for value in bounds)
+            highlight_bounds = [range_boundaries(value) for value in highlight_ranges]
+            min_col = min(value[0] for value in highlight_bounds); min_row = min(value[1] for value in highlight_bounds)
+            max_col = max(value[2] for value in highlight_bounds); max_row = max(value[3] for value in highlight_bounds)
             first_row = max(1, min_row - 10)
             for candidate in range(min_row - 1, first_row - 1, -1):
                 values = [sheet.cell(candidate, c).value for c in range(max(1, min_col - 2), min(sheet.max_column, max_col + 2) + 1)]
@@ -262,7 +262,7 @@ class EvidenceCaptureService:
                     draw.rectangle((x0, y0, x1, y1), fill=color_of(cell, "#ffffff"), outline="#b5bdc7", width=1 * scale)
                     highlighted = any(
                         not (end_row < b[1] or row_number > b[3] or end_col < b[0] or col_number > b[2])
-                        for b in bounds
+                        for b in highlight_bounds
                     )
                     if highlighted:
                         overlay.rectangle((x0, y0, x1, y1), fill=(255, 219, 72, 72), outline=(255, 153, 0, 255), width=3 * scale)
