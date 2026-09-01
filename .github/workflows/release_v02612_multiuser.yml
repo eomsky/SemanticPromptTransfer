@@ -21,7 +21,9 @@ jobs:
           python-version: '3.12'
 
       - name: Patch v0.26.12 multi-user queue and GPU scheduler
-        run: python tools/patch_v02612_multiuser.py
+        run: |
+          python tools/patch_v02612_multiuser.py
+          python tools/patch_v02612_queuefix.py
 
       - name: Install and validate source tree
         run: |
