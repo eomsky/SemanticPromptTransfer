@@ -24,6 +24,7 @@ jobs:
         run: |
           python tools/patch_v02610_credit_reasoning.py
           python tools/patch_v02610_regression_fix.py
+          python tools/patch_v02610_notebook_fix.py
 
       - name: Install and validate source tree
         run: |
