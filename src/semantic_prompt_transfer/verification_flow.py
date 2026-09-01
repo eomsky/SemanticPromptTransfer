@@ -8,6 +8,7 @@ from typing import Any, Iterable, Protocol
 
 from .domain import EvidenceRecord, ReviewItem
 from .llm import TextGenerator
+from .sentence_utils import sentence_spans
 
 _CITATION = re.compile(r"(?:CR|ATT)_[a-f0-9]{20}", re.IGNORECASE)
 _SENTENCE = re.compile(r"[^.!?\n]+(?:[.!?]+|$)|\n+")
@@ -97,9 +98,10 @@ class ClaimSegmenter:
         allowed = {str(v) for v in allowed_evidence_ids}
         claims: list[Claim] = []
         counter = 0
-        for match in _SENTENCE.finditer(str(text or "")):
-            raw = match.group(0)
-            if not raw.strip() or raw.isspace():
+        source = str(text or "")
+        for start, end in sentence_spans(source):
+            raw = source[start:end]
+            if not raw.strip():
                 continue
             counter += 1
             evidence_ids = tuple(
@@ -111,8 +113,8 @@ class ClaimSegmenter:
                     claim_id=f"{item.value}-{counter:03d}",
                     review_item=item,
                     text=raw,
-                    start=match.start(),
-                    end=match.end(),
+                    start=start,
+                    end=end,
                     evidence_ids=evidence_ids,
                 )
             )
@@ -150,6 +152,139 @@ class LLMVerificationAgent:
             reason_code=code,
             reason=reason,
         )
+
+    def _coerce_batch_finding(
+        self,
+        claim: Claim,
+        value: dict[str, Any],
+        rows: tuple[EvidenceRecord, ...],
+    ) -> VerificationFinding:
+        allowed_ids = {row.evidence_id for row in rows}
+        try:
+            status = VerificationStatus(str(value.get("status") or "WARN").upper())
+            severity = RepairSeverity(str(value.get("severity") or "MINOR").upper())
+        except Exception:
+            return self._warn(claim, "VERIFIER_BATCH_SCHEMA_ERROR", "검증 LLM 배치 응답 스키마 오류")
+        problem_span = str(value.get("problem_span") or "")
+        reason_code = str(value.get("reason_code") or "").upper()
+        reason = str(value.get("reason") or "")
+        evidence_ids = tuple(
+            eid for eid in (str(v) for v in value.get("evidence_ids", [])) if eid in allowed_ids
+        )
+        repair_instruction = str(value.get("repair_instruction") or "")
+        if status is VerificationStatus.FAIL:
+            if not rows:
+                return VerificationFinding(
+                    claim.claim_id, claim.revision, VerificationStatus.INSUFFICIENT_EVIDENCE,
+                    reason_code="NO_EVIDENCE", reason="검증에 사용할 근거가 없음",
+                )
+            if reason_code not in self._FAIL_REASON_CODES:
+                return self._warn(claim, "UNSAFE_FAIL_REASON", reason or "FAIL 사유가 허용 범위를 벗어남")
+            if severity is not RepairSeverity.MINOR:
+                return self._warn(claim, "AUTO_PATCH_SCOPE_TOO_WIDE", "문장/문단 재작성은 자동 반영하지 않음")
+            if not problem_span or problem_span not in claim.text:
+                return self._warn(claim, "INVALID_FAIL_SPAN", "FAIL이지만 원문 problem_span을 특정하지 못함")
+            if not evidence_ids:
+                return VerificationFinding(
+                    claim.claim_id, claim.revision, VerificationStatus.INSUFFICIENT_EVIDENCE,
+                    reason_code="UNBOUND_FAIL_EVIDENCE", reason="FAIL 판정을 특정 근거에 연결하지 못함",
+                )
+        if status is VerificationStatus.INSUFFICIENT_EVIDENCE:
+            problem_span = ""
+            repair_instruction = ""
+        if status in {VerificationStatus.PASS, VerificationStatus.WARN}:
+            repair_instruction = ""
+        return VerificationFinding(
+            claim_id=claim.claim_id,
+            revision=claim.revision,
+            status=status,
+            severity=severity,
+            problem_span=problem_span,
+            reason_code=reason_code,
+            reason=reason,
+            evidence_ids=evidence_ids,
+            repair_instruction=repair_instruction,
+        )
+
+    def verify_many(
+        self,
+        claims: Iterable[Claim],
+        evidence_by_claim: Iterable[Iterable[EvidenceRecord]],
+    ) -> tuple[VerificationFinding, ...]:
+        claim_rows = tuple(claims)
+        evidence_rows = tuple(tuple(rows) for rows in evidence_by_claim)
+        if len(claim_rows) != len(evidence_rows):
+            raise ValueError("claims and evidence_by_claim length mismatch")
+        if not claim_rows:
+            return ()
+        catalog: dict[str, str] = {}
+        payload = []
+        for claim, rows in zip(claim_rows, evidence_rows, strict=True):
+            ids = []
+            for row in rows:
+                catalog.setdefault(row.evidence_id, str(row.content or "")[:1400])
+                ids.append(row.evidence_id)
+            payload.append({
+                "claim_id": claim.claim_id,
+                "revision": claim.revision,
+                "claim": claim.text,
+                "evidence_ids": ids,
+            })
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "당신은 기업여신 심사의견의 독립 검증 에이전트다. 여러 claim을 한 번에 검증하되 "
+                    "최종 문장을 직접 작성하거나 문체를 개선하지 않는다. 기본 판단은 PASS다. FAIL은 "
+                    "근거와 직접 대조해 값·기간·단위·동일 사실이 명백히 충돌하는 경우에만 허용한다. "
+                    "애매함·근거 부족·표현 선호·분석 강도 차이는 WARN 또는 INSUFFICIENT_EVIDENCE다. "
+                    "FAIL이면 severity=MINOR, problem_span은 claim 원문에서 그대로 복사하고 실제 evidence_id만 사용한다. "
+                    "reason_code는 FACT_CONTRADICTION, PERIOD_MISMATCH, UNIT_MISMATCH, SOURCE_CONFLICT 중 하나만 사용한다. "
+                    "JSON 객체 하나만 반환한다. corrected_sentence는 작성하지 않는다."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "claims": payload,
+                        "evidence": catalog,
+                        "output_schema": {
+                            "findings": [{
+                                "claim_id": "A-001", "revision": 1, "status": "PASS",
+                                "severity": "MINOR", "problem_span": "", "reason_code": "",
+                                "reason": "", "evidence_ids": [], "repair_instruction": ""
+                            }]
+                        },
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        ]
+        try:
+            raw = str(self.generator.generate(messages) or "").strip().strip("`")
+            match = re.search(r"\{.*\}", raw, flags=re.S)
+            if not match:
+                raise ValueError("missing JSON object")
+            decoded = json.loads(match.group(0))
+            values = decoded.get("findings") if isinstance(decoded, dict) else None
+            if not isinstance(values, list):
+                raise ValueError("missing findings array")
+            by_claim = {str(row.get("claim_id") or ""): row for row in values if isinstance(row, dict)}
+        except Exception as exc:
+            return tuple(
+                self._warn(claim, "VERIFIER_BATCH_PARSE_ERROR", f"검증 LLM 배치 파싱 실패: {type(exc).__name__}")
+                for claim in claim_rows
+            )
+        results = []
+        for claim, rows in zip(claim_rows, evidence_rows, strict=True):
+            value = by_claim.get(claim.claim_id)
+            if value is None:
+                results.append(self._warn(claim, "VERIFIER_BATCH_MISSING", "검증 LLM이 해당 claim 판정을 반환하지 않음"))
+            else:
+                results.append(self._coerce_batch_finding(claim, value, rows))
+        return tuple(results)
 
     def verify(self, claim: Claim, evidence: Iterable[EvidenceRecord]) -> VerificationFinding:
         rows = tuple(evidence)

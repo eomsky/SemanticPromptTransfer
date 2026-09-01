@@ -108,11 +108,11 @@ def _similarity(query: str, text: str) -> float:
 def _sanitize_style_text(text: str, forbidden_tokens: Iterable[str] = ()) -> str:
     value = str(text or "")
     for token in sorted({str(v) for v in forbidden_tokens if str(v)}, key=len, reverse=True):
-        value = value.replace(token, "[ENTITY]")
-    value = _COMPANY.sub("[COMPANY]", value)
-    value = re.sub(r"(?<!\d)(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}(?!\d)", "[DATE]", value)
-    value = re.sub(r"(?<!\d)(?:19|20)\d{2}\s*년", "[PERIOD]", value)
-    value = _NUMBER.sub("[VALUE]", value)
+        value = value.replace(token, "특정대상")
+    value = _COMPANY.sub("특정기업", value)
+    value = re.sub(r"(?<!\d)(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}(?!\d)", "특정일자", value)
+    value = re.sub(r"(?<!\d)(?:19|20)\d{2}\s*년", "특정기간", value)
+    value = _NUMBER.sub("수치", value)
     return value
 
 

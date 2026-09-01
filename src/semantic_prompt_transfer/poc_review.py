@@ -152,6 +152,14 @@ class EphemeralReviewJobService:
         documents = self.runtime.registry.list_documents(job.tenant_id, job.case_id)
         try:
             for document_index, document in enumerate(documents):
+                if document.status in {FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING}:
+                    deadline = time.time() + 900.0
+                    while time.time() < deadline:
+                        current = self.runtime.registry.get_document(job.tenant_id, job.case_id, document.document_id)
+                        if current.status not in {FileStatus.VALIDATING, FileStatus.PARSING, FileStatus.INDEXING}:
+                            document = current
+                            break
+                        time.sleep(0.2)
                 if document.status in {FileStatus.READY, FileStatus.EXCLUDED, FileStatus.DELETING, FileStatus.DELETED}:
                     continue
                 if self.upload_processor is None:

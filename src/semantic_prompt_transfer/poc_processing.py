@@ -500,19 +500,16 @@ class ShardedAttachmentRetriever:
         text = " ".join(str(hit.get("document") or hit.get("embedding_text") or "").lower().split())
         return hashlib.sha256(text[:1200].encode("utf-8")).hexdigest()
 
-    def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
-        filters = dict(kwargs.get("filters") or {})
-        missing = [key for key in ("tenant_id", "case_id") if not filters.get(key)]
-        if missing:
-            raise ValueError(f"POC retrieval requires scope filters: {missing}")
-        embedding = self.encoder.encode_queries([query])[0]
+    def _from_embedding(
+        self,
+        query: str,
+        embedding: np.ndarray,
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
         raw = self.vector_store.search(embedding, top_k=max(self.top_k * 4, self.top_k), filters=filters)
         if not raw:
             return {"query": query, "filters": filters, "hits": [], "retrieval_quality": "empty"}
-
         best = float(raw[0].get("score") or 0.0)
-        # Dynamic relevance gate: retain results close to the best match, but do not
-        # force unrelated evidence into the prompt when every cosine score is weak.
         floor = max(0.10, best - 0.12)
         accepted: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -539,3 +536,28 @@ class ShardedAttachmentRetriever:
             "score_floor": floor,
             "raw_hit_count": len(raw),
         }
+
+    def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
+        filters = dict(kwargs.get("filters") or {})
+        missing = [key for key in ("tenant_id", "case_id") if not filters.get(key)]
+        if missing:
+            raise ValueError(f"POC retrieval requires scope filters: {missing}")
+        embedding = self.encoder.encode_queries([query])[0]
+        return self._from_embedding(query, embedding, filters)
+
+    def search_many(self, queries: list[str] | tuple[str, ...], **kwargs: Any) -> list[dict[str, Any]]:
+        values = [str(query) for query in queries]
+        if not values:
+            return []
+        filters = dict(kwargs.get("filters") or {})
+        missing = [key for key in ("tenant_id", "case_id") if not filters.get(key)]
+        if missing:
+            raise ValueError(f"POC retrieval requires scope filters: {missing}")
+        embeddings = np.asarray(self.encoder.encode_queries(values), dtype=np.float32)
+        if len(embeddings) != len(values):
+            raise RuntimeError("query embedding batch length mismatch")
+        return [
+            self._from_embedding(query, embeddings[index], filters)
+            for index, query in enumerate(values)
+        ]
+

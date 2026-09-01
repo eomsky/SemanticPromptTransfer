@@ -151,6 +151,13 @@ def create_fastapi_app(
                             derived_uri=str(storage.derived_path(scope)),
                         )
                     )
+                    application.update_upload(
+                        scope, FileStatus.VALIDATING, progress=1,
+                        message="샘플 자료 분석을 준비합니다.",
+                    )
+                    threading.Thread(
+                        target=process_upload, args=(scope, stored, document_kind), daemon=True
+                    ).start()
                 except Exception:
                     stored.unlink(missing_ok=True)
                     raise
@@ -213,6 +220,18 @@ def create_fastapi_app(
         except Exception:
             source_path.unlink(missing_ok=True)
             raise
+        try:
+            application.update_upload(
+                scope, FileStatus.VALIDATING, progress=1,
+                message="업로드 완료 · 자료 분석을 준비합니다.",
+            )
+            background_tasks.add_task(process_upload, scope, source_path, document_kind)
+            row = dict(row)
+            row["status"] = FileStatus.VALIDATING.value
+            row["progress_percent"] = 1
+            row["progress_stage"] = "자료 분석 준비"
+        except Exception:
+            pass
         return row
 
     @app.get("/api/v1/runtime/health")

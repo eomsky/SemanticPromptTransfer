@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
@@ -29,6 +30,7 @@ LLMClient = TextGenerator
 _CITATION = re.compile(r"(?:CR|ATT)_[a-f0-9]{20}", re.IGNORECASE)
 _COMPLETE_SUFFIXES = ("함", "임", "됨", "음", "필요함", "양호함", "판단됨", "예상됨", "전망됨", "확인됨")
 _INCOMPLETE_SUFFIXES = ("등에", "으로", "하며", "하고", "및", "따라", "대해", "대한", "에서", "위해", "통해", "반면", "이나", "지만", "경우", "때문에")
+_STYLE_PLACEHOLDER = re.compile(r"\[(?:VALUE|PERIOD|COMPANY|DATE|ENTITY)\]", re.IGNORECASE)
 
 
 class AttachmentRetriever(Protocol):
@@ -244,6 +246,17 @@ class ReviewGenerationOrchestrator:
         return "\n".join(kept).strip() or value
 
     @staticmethod
+    def _strip_style_placeholder_leakage(text: str) -> str:
+        value = str(text or "")
+        if not _STYLE_PLACEHOLDER.search(value):
+            return value.strip()
+        clean_lines = [line for line in value.splitlines() if not _STYLE_PLACEHOLDER.search(line)]
+        cleaned = "\n".join(clean_lines).strip()
+        if cleaned:
+            return cleaned
+        return _STYLE_PLACEHOLDER.sub("", value).strip()
+
+    @staticmethod
     def _cited_ids(text: str, evidence: Sequence[EvidenceRecord]) -> tuple[str, ...]:
         allowed = {row.evidence_id for row in evidence}
         return tuple(value for value in dict.fromkeys(_CITATION.findall(str(text or ""))) if value in allowed)
@@ -265,6 +278,7 @@ class ReviewGenerationOrchestrator:
                 (lambda token: token_callback(item, token)) if token_callback else None,
             )
             if text:
+                text = self._strip_style_placeholder_leakage(text)
                 text = self._ensure_complete(
                     case=case,
                     job_id=job_id,
@@ -288,6 +302,7 @@ class ReviewGenerationOrchestrator:
                 # the retry; section_complete atomically replaces it when the retry succeeds.
                 text = self._generate_once(generator, prompt.messages)
                 if text:
+                    text = self._strip_style_placeholder_leakage(text)
                     text = self._ensure_complete(
                         case=case,
                         job_id=job_id,
@@ -330,14 +345,30 @@ class ReviewGenerationOrchestrator:
 
         findings: list[tuple[Any, Any]] = []
         by_id = {row.evidence_id: row for row in evidence}
+        claim_evidence_rows: list[list[EvidenceRecord]] = []
         for claim in claims:
             claim_evidence = [by_id[eid] for eid in claim.evidence_ids if eid in by_id] or list(evidence)
+            claim_evidence_rows.append(claim_evidence)
             if claim_callback:
                 claim_callback(
                     item,
                     {"type": "verification_started", "claim_id": claim.claim_id, "revision": claim.revision},
                 )
-            finding = self.verifier.verify(claim, claim_evidence)
+        batch_verify = getattr(self.verifier, "verify_many", None)
+        batch_results = None
+        if callable(batch_verify) and claims:
+            try:
+                candidate = tuple(batch_verify(claims, claim_evidence_rows))
+                if len(candidate) == len(claims):
+                    batch_results = candidate
+            except Exception:
+                batch_results = None
+        if batch_results is None:
+            batch_results = tuple(
+                self.verifier.verify(claim, claim_evidence)
+                for claim, claim_evidence in zip(claims, claim_evidence_rows, strict=True)
+            )
+        for claim, finding in zip(claims, batch_results, strict=True):
             findings.append((claim, finding))
             if claim_callback:
                 claim_callback(item, {"type": "verification_result", **finding.to_dict()})
@@ -462,17 +493,33 @@ class ReviewGenerationOrchestrator:
 
             prepared: dict[ReviewItem, tuple[str, list[EvidenceRecord], list[Any]]] = {}
             evidence_by_item: dict[ReviewItem, list[EvidenceRecord]] = {}
-            for index, item in enumerate(ReviewItem.ordered()):
-                query = self.query_profiles.get(item).build(case)
+            ordered_items = ReviewItem.ordered()
+            queries = {item: self.query_profiles.get(item).build(case) for item in ordered_items}
+            retrieval_by_item: dict[ReviewItem, dict[str, Any]] = {}
+            bulk_search = getattr(self.attachment_retriever, "search_many", None)
+            if callable(bulk_search):
                 try:
-                    retrieval = self.attachment_retriever.search(
-                        query,
+                    bulk_rows = list(bulk_search(
+                        [queries[item] for item in ordered_items],
                         filters={"tenant_id": case.tenant_id, "case_id": case.case_id},
-                    )
+                    ))
+                    if len(bulk_rows) == len(ordered_items):
+                        retrieval_by_item = dict(zip(ordered_items, bulk_rows, strict=True))
                 except Exception as exc:
-                    recovered_any = True
-                    retrieval = {"query": query, "hits": [], "recovered": True}
-                    self._audit(case, job_id, "RETRIEVAL_RECOVERED", {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]})
+                    self._audit(case, job_id, "BATCH_RETRIEVAL_FALLBACK", {"error_type": type(exc).__name__, "message": str(exc)[:1000]})
+            for index, item in enumerate(ordered_items):
+                query = queries[item]
+                retrieval = retrieval_by_item.get(item)
+                if retrieval is None:
+                    try:
+                        retrieval = self.attachment_retriever.search(
+                            query,
+                            filters={"tenant_id": case.tenant_id, "case_id": case.case_id},
+                        )
+                    except Exception as exc:
+                        recovered_any = True
+                        retrieval = {"query": query, "hits": [], "recovered": True}
+                        self._audit(case, job_id, "RETRIEVAL_RECOVERED", {"item": item.value, "error_type": type(exc).__name__, "message": str(exc)[:1000]})
                 try:
                     evidence = self.evidence_assembler.assemble(item, credit_facts, retrieval)
                 except Exception as exc:
@@ -505,72 +552,90 @@ class ReviewGenerationOrchestrator:
             sections: list[ReviewSectionDraft] = []
             trace = EvidenceTraceLedger()
             evidence_catalog: dict[str, dict[str, Any]] = {}
+            pending: dict[ReviewItem, dict[str, Any]] = {}
 
-            for index, item in enumerate(ReviewItem.ordered()):
-                base = 40 + index * 11
-                emit(JobStage.ITEM_GENERATION, base, f"{item.value}. {item.title} 생성 중 ({index + 1}/5)", item)
-                query, evidence, examples = prepared[item]
-                blueprint = portfolio.item_blueprint(item)
-                prompt = self.prompt_builder.build(case, item, query, evidence, examples, reasoning_blueprint=blueprint)
-                prompts.append(prompt)
-                prompt_evidence = self._prompt_evidence(prompt, evidence)
-                for row in prompt_evidence:
-                    evidence_catalog[row.evidence_id] = row.to_dict()
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="spt-verification") as verification_pool:
+                for index, item in enumerate(ReviewItem.ordered()):
+                    base = 40 + index * 11
+                    emit(JobStage.ITEM_GENERATION, base, f"{item.value}. {item.title} 생성 중 ({index + 1}/5)", item)
+                    query, evidence, examples = prepared[item]
+                    blueprint = portfolio.item_blueprint(item)
+                    prompt = self.prompt_builder.build(case, item, query, evidence, examples, reasoning_blueprint=blueprint)
+                    prompts.append(prompt)
+                    prompt_evidence = self._prompt_evidence(prompt, evidence)
+                    for row in prompt_evidence:
+                        evidence_catalog[row.evidence_id] = row.to_dict()
+                    generated_text, recovered = self._technical_generate(
+                        case=case,
+                        job_id=job_id,
+                        item=item,
+                        prompt=prompt,
+                        generator=generator,
+                        token_callback=token_callback,
+                    )
+                    recovered_any = recovered_any or recovered
+                    future = verification_pool.submit(
+                        self._verify_and_patch,
+                        item=item,
+                        text=generated_text,
+                        evidence=prompt_evidence,
+                        generator=generator,
+                        claim_callback=claim_callback,
+                        patch_callback=patch_callback,
+                    )
+                    pending[item] = {
+                        "future": future,
+                        "prompt": prompt,
+                        "prompt_evidence": prompt_evidence,
+                        "blueprint": blueprint,
+                        "recovered": recovered,
+                        "base": base,
+                    }
+                    emit(JobStage.ITEM_GENERATION, min(94, base + 8), f"{item.value}. 생성 완료 · 검증 진행 중 ({index + 1}/5)", item)
 
-                text, recovered = self._technical_generate(
-                    case=case,
-                    job_id=job_id,
-                    item=item,
-                    prompt=prompt,
-                    generator=generator,
-                    token_callback=token_callback,
-                )
-                recovered_any = recovered_any or recovered
-
-                text, verification, repaired = self._verify_and_patch(
-                    item=item,
-                    text=text,
-                    evidence=prompt_evidence,
-                    generator=generator,
-                    claim_callback=claim_callback,
-                    patch_callback=patch_callback,
-                )
-                recovered_any = recovered_any or repaired
-                cited_ids = self._cited_ids(text, prompt_evidence)
-                refs = trace.register(item, prompt_evidence, cited_ids)
-                final_claims = self.segmenter.segment(item, text, [row.evidence_id for row in prompt_evidence])
-                claim_evidence_map = []
-                for claim in final_claims:
-                    ref_nos = []
-                    for eid in claim.evidence_ids:
-                        ref_no = trace.ref_no_for(eid)
-                        if ref_no is not None and ref_no not in ref_nos:
-                            ref_nos.append(ref_no)
-                    claim_evidence_map.append({"claim_id": claim.claim_id, "evidence_ids": list(claim.evidence_ids), "ref_nos": ref_nos})
-                meta = {
-                    "valid": True,
-                    "verification_mode": self.verification_mode.value,
-                    "verification": verification,
-                    "recovered": recovered,
-                    "repaired": repaired,
-                    "evidence_rebound_after_patch": bool(repaired),
-                    "cited_evidence_ids": list(cited_ids),
-                    "evidence_refs": [ref.to_dict() for ref in refs],
-                    "claim_evidence_map": claim_evidence_map,
-                    "credit_reasoning": blueprint,
-                    "prompt_budget": dict(prompt.manifest),
-                }
-                section = ReviewSectionDraft(
-                    review_item=item,
-                    text=text,
-                    evidence_ids=cited_ids,
-                    validation=meta,
-                    evidence_refs=tuple(ref.to_dict() for ref in refs),
-                )
-                sections.append(section)
-                if section_callback:
-                    section_callback(item, text, prompt.evidence, meta)
-                emit(JobStage.ITEM_GENERATION, min(95, base + 9), f"{item.value}. {item.title} 생성 완료 ({index + 1}/5)", item)
+                for index, item in enumerate(ReviewItem.ordered()):
+                    payload = pending[item]
+                    text_value, verification, repaired = payload["future"].result()
+                    recovered_any = recovered_any or repaired
+                    prompt = payload["prompt"]
+                    prompt_evidence = payload["prompt_evidence"]
+                    blueprint = payload["blueprint"]
+                    cited_ids = self._cited_ids(text_value, prompt_evidence)
+                    refs = trace.register(item, prompt_evidence, cited_ids)
+                    final_claims = self.segmenter.segment(item, text_value, [row.evidence_id for row in prompt_evidence])
+                    claim_evidence_map = []
+                    for claim in final_claims:
+                        ref_nos = []
+                        for eid in claim.evidence_ids:
+                            ref_no = trace.ref_no_for(eid)
+                            if ref_no is not None and ref_no not in ref_nos:
+                                ref_nos.append(ref_no)
+                        claim_evidence_map.append({"claim_id": claim.claim_id, "evidence_ids": list(claim.evidence_ids), "ref_nos": ref_nos})
+                    meta = {
+                        "valid": True,
+                        "verification_mode": self.verification_mode.value,
+                        "verification": verification,
+                        "recovered": payload["recovered"],
+                        "repaired": repaired,
+                        "verification_pipeline": "section_batch_overlapped",
+                        "evidence_rebound_after_patch": bool(repaired),
+                        "cited_evidence_ids": list(cited_ids),
+                        "evidence_refs": [ref.to_dict() for ref in refs],
+                        "claim_evidence_map": claim_evidence_map,
+                        "credit_reasoning": blueprint,
+                        "prompt_budget": dict(prompt.manifest),
+                    }
+                    section = ReviewSectionDraft(
+                        review_item=item,
+                        text=text_value,
+                        evidence_ids=cited_ids,
+                        validation=meta,
+                        evidence_refs=tuple(ref.to_dict() for ref in refs),
+                    )
+                    sections.append(section)
+                    if section_callback:
+                        section_callback(item, text_value, prompt.evidence, meta)
+                    emit(JobStage.ITEM_GENERATION, min(95, int(payload["base"]) + 9), f"{item.value}. {item.title} 검증 완료 ({index + 1}/5)", item)
 
             emit(JobStage.DOCX_RENDER, 97, "심사의견과 근거 부록 Word 파일을 생성합니다.")
             try:

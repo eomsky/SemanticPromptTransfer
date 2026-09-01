@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -18,7 +19,7 @@ class NeverProcess:
         raise AssertionError("demo seeding must not parse or embed")
 
 
-def test_demo_files_seed_once_are_downloadable_and_remain_unprocessed():
+def test_demo_files_seed_once_are_downloadable_and_begin_background_processing():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         runtime = EphemeralColabRuntime(EphemeralColabConfig(root=root / "runtime", require_content_root=False, clean_start=True))
@@ -44,10 +45,14 @@ def test_demo_files_seed_once_are_downloadable_and_remain_unprocessed():
         assert len(payload["credit_report"]) == 1
         assert len(payload["attachments"]) == 1
         rows = payload["credit_report"] + payload["attachments"]
-        assert all(row["status"] == "UPLOADED" for row in rows)
-        assert all(row["progress_percent"] == 0 for row in rows)
+        assert all(row["status"] in {"VALIDATING", "PARSING", "INDEXING", "READY", "EXCLUDED"} for row in rows)
+        assert all(0 <= int(row["progress_percent"]) <= 100 for row in rows)
         assert all(row["is_demo"] is True for row in rows)
-        assert processor.calls == 0
+        for _ in range(50):
+            if processor.calls >= 2:
+                break
+            time.sleep(0.01)
+        assert processor.calls == 2
         assert runtime.vectors.count() == 0
         credit_row = payload["credit_report"][0]
         downloaded = client.get(
@@ -64,7 +69,7 @@ def test_demo_files_seed_once_are_downloadable_and_remain_unprocessed():
         after = client.get("/api/v1/cases/case-demo/documents", params={"tenant_id": "poc-demo"}).json()
         assert after["credit_report"] == []
         assert len(after["attachments"]) == 1
-        assert processor.calls == 0
+        assert processor.calls == 2
         assert runtime.vectors.count() == 0
         runtime.close(purge=True)
 

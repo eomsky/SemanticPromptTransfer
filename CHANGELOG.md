@@ -1,3 +1,13 @@
+## 0.26.11 - 2026-09-01
+
+- Fixed decimal/date-safe claim segmentation and removed duplicate frontend sentence splitting.
+- Prevented STYLE_ONLY [VALUE]/[PERIOD]/[COMPANY]/[DATE]/[ENTITY] placeholders from leaking into final opinions or Word fallback excerpts.
+- Auto-fit full evidence captures to the available A4 page area without cropping content.
+- Added E5 A-E batch query encoding, section-batch LLM verification, and generation/verification overlap on two vLLM lanes.
+- Started parsing/embedding immediately after upload and made review generation wait for in-flight preprocessing rather than duplicating it.
+- Fixed file status synchronization and removed the stale '임베딩 대기' display after completion.
+- Preserved v0.26.10 Credit Reasoning, 28,672-token context, 3,600-token generation budget, evidence trace, and conservative MINOR-only verifier policy.
+
 ## 0.26.10 - 2026-09-01
 
 - Added a structured Credit Reasoning Layer for materiality, risk/mitigant, repayment impact, trend, forward triggers, and cross-item A-E signals.

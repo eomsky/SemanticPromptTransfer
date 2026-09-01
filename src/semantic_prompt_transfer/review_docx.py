@@ -97,6 +97,43 @@ class OpinionDocumentBuilder:
                     unique[ref_no] = dict(ref)
         return [unique[key] for key in sorted(unique)]
 
+    @staticmethod
+    def _fit_picture_dimensions(
+        pixel_width: int,
+        pixel_height: int,
+        max_width_cm: float,
+        max_height_cm: float,
+    ) -> tuple[float, float]:
+        width = max(1, int(pixel_width))
+        height = max(1, int(pixel_height))
+        target_width = float(max_width_cm)
+        target_height = target_width * height / width
+        if target_height > max_height_cm:
+            target_height = float(max_height_cm)
+            target_width = target_height * width / height
+        return max(1.0, target_width), max(1.0, target_height)
+
+    def _add_fitted_picture(self, document, png: bytes, section) -> tuple[float, float]:
+        from PIL import Image
+        from docx.shared import Cm
+
+        with Image.open(io.BytesIO(png)) as image:
+            pixel_width, pixel_height = image.size
+        emu_per_cm = 360000.0
+        max_width_cm = (section.page_width - section.left_margin - section.right_margin) / emu_per_cm
+        usable_height_cm = (section.page_height - section.top_margin - section.bottom_margin) / emu_per_cm
+        max_height_cm = max(8.0, usable_height_cm - 5.2)
+        width_cm, height_cm = self._fit_picture_dimensions(
+            pixel_width, pixel_height, max_width_cm, max_height_cm
+        )
+        document.add_picture(io.BytesIO(png), width=Cm(width_cm), height=Cm(height_cm))
+        return width_cm, height_cm
+
+    @staticmethod
+    def _safe_evidence_excerpt(value: str) -> str:
+        cleaned = re.sub(r"\[(?:VALUE|PERIOD|COMPANY|DATE|ENTITY)\]", "", str(value or ""), flags=re.I)
+        return cleaned.strip() or "원문 캡처를 생성하지 못했습니다."
+
     def build(
         self,
         case: CaseContext,
@@ -181,6 +218,7 @@ class OpinionDocumentBuilder:
                 "심사의견에 표시된 [근거 N] 번호와 아래 근거 이미지를 대조하여 원문을 직접 확인할 수 있습니다."
             )
             intro.paragraph_format.space_after = Pt(10)
+            document.add_page_break()
 
             for index, ref in enumerate(refs):
                 if index:
@@ -209,12 +247,12 @@ class OpinionDocumentBuilder:
                 if self.capture_service is not None and source_row:
                     try:
                         png = self.capture_service.capture_png(case.tenant_id, case.case_id, source_row)
-                        document.add_picture(io.BytesIO(png), width=Cm(16.0))
+                        self._add_fitted_picture(document, png, section)
                         rendered = True
                     except Exception:
                         rendered = False
                 if not rendered:
-                    excerpt = str(source_row.get("content") or "원문 캡처를 생성하지 못했습니다.")
+                    excerpt = self._safe_evidence_excerpt(str(source_row.get("content") or ""))
                     document.add_paragraph(excerpt[:1800])
 
                 back = document.add_paragraph()
